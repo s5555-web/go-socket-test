@@ -65,7 +65,7 @@
     function connect() {
       const url = urlEl.value.trim();
       if (!url) return;
-      setStatus('连接中…', 'connecting');
+      setStatus('连接中 …', 'connecting');
       btnConnect.disabled = true;
       log('正在连接: ' + url, 'sys');
       try {
