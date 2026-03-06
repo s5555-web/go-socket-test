@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socket 连接测试</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    .status { padding: 0.5rem; border-radius: 6px; margin-bottom: 1rem; }
+    .status.connected { background: #d4edda; color: #155724; }
+    .status.disconnected { background: #f8d7da; color: #721c24; }
+    .status.connecting { background: #fff3cd; color: #856404; }
+    .row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+    input[type="text"] { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 0.5rem 1rem; border-radius: 4px; border: 1px solid #0d6efd; background: #0d6efd; color: #fff; cursor: pointer; }
+    button:hover { background: #0b5ed7; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #log { height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; font-size: 0.875rem; background: #f8f9fa; }
+    #log p { margin: 0.25rem 0; word-break: break-all; }
+    #log .in { color: #0d6efd; }
+    #log .out { color: #198754; }
+    #log .sys { color: #6c757d; }
+  </style>
+</head>
+<body>
+  <h1>Socket 连接测试</h1>
+  <div id="status" class="status disconnected">未连接</div>
+  <div class="row">
+    <input type="text" id="url" value="ws://localhost:8080/ws/socket" placeholder="WebSocket 地址" />
+    <button id="btnConnect">连接</button>
+    <button id="btnDisconnect" disabled>断开</button>
+  </div>
+  <div class="row">
+    <input type="text" id="message" placeholder="输入消息回车发送" />
+    <button id="btnSend" disabled>发送</button>
+  </div>
+  <div id="log"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const urlEl = document.getElementById('url');
+    const messageEl = document.getElementById('message');
+    const logEl = document.getElementById('log');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const btnSend = document.getElementById('btnSend');
+
+    let ws = null;
+
+    function setStatus(text, state) {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + state;
+    }
+
+    function log(msg, type = 'sys') {
+      const p = document.createElement('p');
+      p.className = type;
+      p.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+      logEl.appendChild(p);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function connect() {
+      const url = urlEl.value.trim();
+      if (!url) return;
+      setStatus('连接中…', 'connecting');
+      btnConnect.disabled = true;
+      log('正在连接: ' + url, 'sys');
+      try {
+        ws = new WebSocket(url);
+        ws.onopen = function () {
+          setStatus('已连接', 'connected');
+          btnConnect.disabled = true;
+          btnDisconnect.disabled = false;
+          btnSend.disabled = false;
+          log('连接成功', 'sys');
+        };
+        ws.onmessage = function (e) {
+          log('收到: ' + e.data, 'in');
+        };
+        ws.onclose = function () {
+          setStatus('未连接', 'disconnected');
+          btnConnect.disabled = false;
+          btnDisconnect.disabled = true;
+          btnSend.disabled = true;
+          ws = null;
+          log('连接已关闭', 'sys');
+        };
+        ws.onerror = function () {
+          log('连接错误', 'sys');
+        };
+      } catch (err) {
+        setStatus('未连接', 'disconnected');
+        btnConnect.disabled = false;
+        log('错误: ' + err.message, 'sys');
+      }
+    }
+
+    function disconnect() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+    }
+
+    function send() {
+      const msg = messageEl.value.trim();
+      if (!ws || ws.readyState !== WebSocket.OPEN || !msg) return;
+      const data = {
+        msg
+      };
+      ws.send(JSON.stringify(data));
+      log('发送: ' + msg, 'out');
+      messageEl.value = '';
+    }
+
+    btnConnect.addEventListener('click', connect);
+    btnDisconnect.addEventListener('click', disconnect);
+    btnSend.addEventListener('click', send);
+    messageEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') send();
+    });
+  </script>
+</body>
+</html>
