@@ -2,6 +2,7 @@ package socket
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +23,15 @@ type Handler struct {
 		PongWaitSec     int
 		PingPeriodSec   int
 	}
+	Authorize func(string) (int64, error)
 }
 
 func (h *Handler) Upgrade(c *gin.Context) {
+	uid, authErr := h.Authorize(c.Query("token"))
+	if authErr != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
@@ -33,7 +40,7 @@ func (h *Handler) Upgrade(c *gin.Context) {
 		Hub:  h.Hub,
 		Conn: conn,
 		Send: make(chan []byte, 256),
-		ID:   GenClientID(),
+		ID:   strconv.FormatInt(uid, 10),
 	}
 	h.Hub.Register(client)
 	pongWait := time.Duration(h.Config.PongWaitSec) * time.Second

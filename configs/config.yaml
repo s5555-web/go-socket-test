@@ -1,5 +1,12 @@
 server:
-  http_addr: ":8080"
+  client_addr: ":802"
+  admin_addr: ":801"
+
+database:
+  dsn: "root:Qwer1234!@@tcp(127.0.0.1:3306)/signal_web?charset=utf8mb4&parseTime=true&loc=Local"
+
+auth:
+  secret: "change-this-secret-in-production"
 
 socket:
   read_buffer_size: 1024

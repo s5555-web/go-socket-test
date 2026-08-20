@@ -4,11 +4,14 @@ go 1.22
 
 require (
 	github.com/gin-gonic/gin v1.10.0
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/viper v1.19.0
+	golang.org/x/crypto v0.23.0
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
@@ -42,7 +45,6 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/crypto v0.23.0 // indirect
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
 	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.20.0 // indirect

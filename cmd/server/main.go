@@ -12,6 +12,7 @@ import (
 	"sket/internal/api"
 	"sket/internal/api/socket"
 	"sket/internal/config"
+	"sket/internal/store"
 )
 
 func main() {
@@ -40,17 +41,26 @@ func run() int {
 	go hub.Run()
 	defer hub.Stop()
 
-	router := api.NewRouter(cfg, hub)
-	srv := &http.Server{
-		Addr:    cfg.Server.HTTPAddr,
-		Handler: router.Engine(),
+	db, err := store.Open(cfg.Database.DSN)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "database: %v\n", err)
+		return 1
 	}
+	defer db.Close()
+	app := api.New(cfg, db, hub)
+	clientSrv := &http.Server{Addr: cfg.Server.ClientAddr, Handler: app.ClientEngine(cfg)}
+	adminSrv := &http.Server{Addr: cfg.Server.AdminAddr, Handler: app.AdminEngine()}
 
 	go func() {
-		fmt.Printf("server listening on %s\n", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("client listening on %s\n", clientSrv.Addr)
+		if err := clientSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "listen: %v\n", err)
-			os.Exit(1)
+		}
+	}()
+	go func() {
+		fmt.Printf("admin listening on %s\n", adminSrv.Addr)
+		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "admin listen: %v\n", err)
 		}
 	}()
 
@@ -60,9 +70,10 @@ func run() int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := clientSrv.Shutdown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
 	}
+	_ = adminSrv.Shutdown(ctx)
 	fmt.Println("server stopped")
 	return 0
 }
