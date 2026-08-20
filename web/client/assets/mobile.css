@@ -1,0 +1,34 @@
+.mobileBack{display:none}
+@media(max-width:720px){
+  main{display:block;width:100%;height:var(--app-height,100dvh);overflow:hidden}
+  aside{width:100%;height:100%;border:0;background:#fff}
+  aside>header{height:64px;padding:10px 14px}
+  aside header small{display:inline}
+  .headerActions{gap:8px}
+  .search{padding:10px 12px}
+  .search input{display:block;font-size:16px}
+  .contacts{display:block;max-height:92px;padding:0 10px 8px;white-space:nowrap;overflow-x:auto;overflow-y:hidden}
+  #chats{width:100%}
+  .chat{justify-content:flex-start;min-height:70px;padding:12px 14px;border-left:0;border-bottom:1px solid #f0f1f5}
+  .chat.active{border-left:0}
+  .chatText{display:block}
+  .chatDelete{opacity:1;font-size:20px;padding:0 7px}
+  .conversation{display:none;width:100%;height:100%;background:#f8f9fc}
+  main.mobile-room-open aside{display:none}
+  main.mobile-room-open .conversation{display:block}
+  #empty{display:none!important}
+  #room{width:100%;height:100%;grid-template-rows:64px minmax(0,1fr) auto}
+  #room>header{height:64px;padding:8px 12px;gap:9px}
+  #room>header>div:nth-of-type(2){min-width:0;overflow:hidden}
+  #roomName{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #room header small{max-width:66vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mobileBack{display:grid;place-items:center;flex:0 0 38px;width:38px;height:42px;padding:0;background:transparent;color:#2c6bed;font-size:38px;font-weight:400}
+  #roomAvatar{width:40px;height:40px;flex-basis:40px}
+  #messages{padding:14px 11px 18px;gap:7px}
+  .msg{max-width:86%;padding:9px 12px;font-size:15px}
+  #composer{padding:9px 10px calc(9px + env(safe-area-inset-bottom));gap:8px}
+  #composer textarea{min-width:0;max-height:112px;padding:11px 14px;font-size:16px}
+  #composer button{flex:0 0 44px;width:44px;height:44px;padding:0}
+  dialog{width:calc(100vw - 24px);max-width:420px;padding:18px}
+  .modal{min-width:0;width:100%}
+}
