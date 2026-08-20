@@ -1,0 +1,15 @@
+{
+  "name": "signal-web-desktop",
+  "version": "1.0.0",
+  "description": "Signal Web Windows desktop client",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "package:win": "electron-packager . SignalWeb --platform=win32 --arch=x64 --out=dist --overwrite --asar --prune=true"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^43.4.1"
+  }
+}
