@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew Signal Web short-lived IP certificate
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot-venv/bin/certbot renew --cert-name signal-web --quiet --deploy-hook "systemctl reload nginx"
