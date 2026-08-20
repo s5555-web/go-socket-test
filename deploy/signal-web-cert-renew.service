@@ -4,4 +4,4 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/certbot-venv/bin/certbot renew --cert-name signal-web --quiet --deploy-hook "systemctl reload nginx"
+ExecStart=/opt/certbot-venv/bin/certbot renew --cert-name signal-web-ip --quiet --deploy-hook "systemctl reload nginx"
