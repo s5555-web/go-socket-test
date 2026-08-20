@@ -1,6 +1,6 @@
-# sket
+# Signal Web
 
-Go 服务端，为前端提供 HTTP API 与 WebSocket。当前以 Socket 服务为主，后续可扩展聊天室等。
+基于 Go、MySQL 与 WebSocket 的 Signal 风格网页版即时通讯 MVP。
 
 ## 技术栈
 
@@ -28,7 +28,13 @@ go mod tidy
 go run ./cmd/server
 ```
 
-默认监听 `:8080`。
+客户端默认监听 `:802`，管理后台默认监听 `:801`。启动前请创建 `signal_web` 数据库并修改 `configs/config.yaml` 中的数据库 DSN 和认证密钥。
+
+首次管理员可先注册普通账号，再执行：
+
+```sql
+UPDATE users SET is_admin=1 WHERE username='你的用户名';
+```
 
 **异常自动重启**：若希望进程崩溃后自动重启，可用脚本或进程管理器：
 
@@ -44,7 +50,13 @@ chmod +x scripts/run-with-restart.sh
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
-| GET | `/ws/socket` | WebSocket 连接 |
+| POST | `/api/register` | 注册 |
+| POST | `/api/login` | 登录 |
+| GET | `/api/conversations` | 会话列表 |
+| POST | `/api/conversations/:id/messages` | 发送消息 |
+| GET | `/ws?token=...` | 实时消息连接 |
+
+> 当前版本提供 TLS 部署条件下的传输加密能力，但尚未实现 Signal Protocol 端到端加密，不应把它用于高敏感通讯。
 
 ## Socket 稳定性
 

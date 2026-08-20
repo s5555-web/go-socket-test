@@ -2,6 +2,7 @@ package socket
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 
@@ -91,6 +92,24 @@ func (h *Hub) Broadcast(msg []byte) {
 func (h *Hub) BroadcastJSON(v interface{}) {
 	data, _ := json.Marshal(v)
 	h.Broadcast(data)
+}
+
+func (h *Hub) SendTo(userIDs []int64, v interface{}) {
+	data, _ := json.Marshal(v)
+	wanted := make(map[string]bool, len(userIDs))
+	for _, id := range userIDs {
+		wanted[fmt.Sprint(id)] = true
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		if wanted[c.ID] {
+			select {
+			case c.Send <- data:
+			default:
+			}
+		}
+	}
 }
 
 func (h *Hub) Register(c *Client)   { h.register <- c }

@@ -7,12 +7,22 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
-	Socket SocketConfig `mapstructure:"socket"`
+	Server   ServerConfig   `mapstructure:"server"`
+	Database DatabaseConfig `mapstructure:"database"`
+	Auth     AuthConfig     `mapstructure:"auth"`
+	Socket   SocketConfig   `mapstructure:"socket"`
 }
 
 type ServerConfig struct {
-	HTTPAddr string `mapstructure:"http_addr"`
+	ClientAddr string `mapstructure:"client_addr"`
+	AdminAddr  string `mapstructure:"admin_addr"`
+}
+
+type DatabaseConfig struct {
+	DSN string `mapstructure:"dsn"`
+}
+type AuthConfig struct {
+	Secret string `mapstructure:"secret"`
 }
 
 type SocketConfig struct {

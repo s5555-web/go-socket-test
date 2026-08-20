@@ -31,7 +31,7 @@ func (c *Client) ReadPump(readLimit int64, pongWait, pingPeriod time.Duration) {
 		if err != nil {
 			break
 		}
-		c.Hub.Broadcast(msg)
+		_ = msg // socket connections receive server events; sends use the persisted HTTP API
 	}
 }
 
