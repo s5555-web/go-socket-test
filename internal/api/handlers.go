@@ -74,7 +74,7 @@ func (a *API) login(c *gin.Context) {
 }
 func (a *API) me(c *gin.Context) {
 	var u store.User
-	err := a.store.DB.QueryRow(`SELECT id,username,display_name,avatar,COALESCE(public_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.PublicKey, &u.IsAdmin, &u.CreatedAt)
+	err := a.store.DB.QueryRow(`SELECT id,username,display_name,avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.IsAdmin, &u.CreatedAt)
 	if err != nil {
 		fail(c, 404, "用户不存在")
 		return
@@ -85,12 +85,28 @@ func (a *API) me(c *gin.Context) {
 func (a *API) setPublicKey(c *gin.Context) {
 	var in struct {
 		PublicKey string `json:"public_key"`
+		KeyBackup string `json:"key_backup"`
+		Password  string `json:"password"`
+		Replace   bool   `json:"replace"`
 	}
-	if c.ShouldBindJSON(&in) != nil || len(in.PublicKey) < 40 || len(in.PublicKey) > 4096 {
+	if c.ShouldBindJSON(&in) != nil || len(in.PublicKey) < 40 || len(in.PublicKey) > 4096 || len(in.KeyBackup) < 80 || len(in.KeyBackup) > 20000 {
 		fail(c, 400, "公钥格式错误")
 		return
 	}
-	res, err := a.store.DB.Exec(`UPDATE users SET public_key=? WHERE id=? AND (public_key IS NULL OR public_key='' OR public_key=?)`, in.PublicKey, uid(c), in.PublicKey)
+	if in.Replace {
+		var hash string
+		if a.store.DB.QueryRow(`SELECT password_hash FROM users WHERE id=?`, uid(c)).Scan(&hash) != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
+			fail(c, 401, "密码验证失败")
+			return
+		}
+	}
+	query := `UPDATE users SET public_key=?,encrypted_private_key=? WHERE id=? AND (public_key IS NULL OR public_key='' OR public_key=?)`
+	args := []interface{}{in.PublicKey, in.KeyBackup, uid(c), in.PublicKey}
+	if in.Replace {
+		query = `UPDATE users SET public_key=?,encrypted_private_key=? WHERE id=?`
+		args = []interface{}{in.PublicKey, in.KeyBackup, uid(c)}
+	}
+	res, err := a.store.DB.Exec(query, args...)
 	if err != nil {
 		fail(c, 500, "保存公钥失败")
 		return
