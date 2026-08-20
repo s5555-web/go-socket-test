@@ -120,7 +120,7 @@ func (a *API) users(c *gin.Context) {
 }
 
 func (a *API) conversations(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,(SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>?) FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(id) FROM messages WHERE conversation_id=x.id) WHERE cm.user_id=? ORDER BY COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c))
+	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,(SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>?) FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(id) FROM messages WHERE conversation_id=x.id) WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c))
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -165,7 +165,8 @@ func (a *API) createConversation(c *gin.Context) {
 		var existing int64
 		err = tx.QueryRow(`SELECT cm.conversation_id FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id AND x.is_group=0 WHERE cm.user_id IN (?,?) GROUP BY cm.conversation_id HAVING COUNT(*)=2 LIMIT 1`, members[0], members[1]).Scan(&existing)
 		if err == nil {
-			_ = tx.Rollback()
+			_, _ = tx.Exec(`UPDATE conversation_members SET hidden=FALSE WHERE conversation_id=? AND user_id=?`, existing, uid(c))
+			_ = tx.Commit()
 			c.JSON(200, gin.H{"id": existing})
 			return
 		}
@@ -189,6 +190,19 @@ func (a *API) createConversation(c *gin.Context) {
 		return
 	}
 	c.JSON(201, gin.H{"id": id})
+}
+
+func (a *API) deleteConversation(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || !a.member(id, uid(c)) {
+		fail(c, 404, "会话不存在")
+		return
+	}
+	if _, err = a.store.DB.Exec(`UPDATE conversation_members SET hidden=TRUE WHERE conversation_id=? AND user_id=?`, id, uid(c)); err != nil {
+		fail(c, 500, "删除失败")
+		return
+	}
+	c.Status(204)
 }
 func (a *API) member(conversation, user int64) bool {
 	var n int
@@ -294,6 +308,7 @@ func (a *API) sendMessage(c *gin.Context) {
 		return
 	}
 	mid, _ := res.LastInsertId()
+	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET hidden=FALSE WHERE conversation_id=?`, id)
 	var m store.Message
 	_ = a.store.DB.QueryRow(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`, mid).Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
 	rows, _ = a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)

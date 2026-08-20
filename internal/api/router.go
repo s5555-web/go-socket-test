@@ -42,6 +42,7 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/users", a.users)
 	u.GET("/conversations", a.conversations)
 	u.POST("/conversations", a.createConversation)
+	u.DELETE("/conversations/:id", a.deleteConversation)
 	u.GET("/conversations/:id/messages", a.messages)
 	u.GET("/conversations/:id/members", a.conversationMembers)
 	u.POST("/conversations/:id/messages", a.sendMessage)
