@@ -56,7 +56,15 @@ chmod +x scripts/run-with-restart.sh
 | POST | `/api/conversations/:id/messages` | 发送消息 |
 | GET | `/ws?token=...` | 实时消息连接 |
 
-> 当前版本提供 TLS 部署条件下的传输加密能力，但尚未实现 Signal Protocol 端到端加密，不应把它用于高敏感通讯。
+## 加密设计
+
+- 浏览器使用 WebCrypto 生成 P-256 ECDH 身份密钥；私钥以不可导出的 `CryptoKey` 保存在本机 IndexedDB，服务端只收到公钥。
+- 每条消息通过 ECDH + HKDF-SHA-256 派生会话密钥，再以 AES-256-GCM 分别加密给每位成员。
+- 明文加入随机填充并按区间扩展，降低依据密文长度推测消息内容的风险。
+- 服务端拒绝明文消息、缺少成员密文或收件人不匹配的消息封装。
+- 会话界面显示公钥安全码，成员可通过其他可信渠道比对。
+
+生产环境必须使用 HTTPS/WSS，否则浏览器不会启用密钥模块。该实现尚不是完整 Signal Protocol：没有 Double Ratchet、一次性预密钥、离线密钥恢复或多设备同步，也未经独立密码学审计。服务器仍可观察账号、会话成员、发送时间和密文大小等元数据。
 
 ## Socket 稳定性
 

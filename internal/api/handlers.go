@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"sket/internal/auth"
@@ -73,12 +74,33 @@ func (a *API) login(c *gin.Context) {
 }
 func (a *API) me(c *gin.Context) {
 	var u store.User
-	err := a.store.DB.QueryRow(`SELECT id,username,display_name,avatar,is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.IsAdmin, &u.CreatedAt)
+	err := a.store.DB.QueryRow(`SELECT id,username,display_name,avatar,COALESCE(public_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.PublicKey, &u.IsAdmin, &u.CreatedAt)
 	if err != nil {
 		fail(c, 404, "用户不存在")
 		return
 	}
 	c.JSON(200, u)
+}
+
+func (a *API) setPublicKey(c *gin.Context) {
+	var in struct {
+		PublicKey string `json:"public_key"`
+	}
+	if c.ShouldBindJSON(&in) != nil || len(in.PublicKey) < 40 || len(in.PublicKey) > 4096 {
+		fail(c, 400, "公钥格式错误")
+		return
+	}
+	res, err := a.store.DB.Exec(`UPDATE users SET public_key=? WHERE id=? AND (public_key IS NULL OR public_key='' OR public_key=?)`, in.PublicKey, uid(c), in.PublicKey)
+	if err != nil {
+		fail(c, 500, "保存公钥失败")
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fail(c, 409, "账号已绑定另一把加密密钥，拒绝覆盖")
+		return
+	}
+	c.Status(204)
 }
 func (a *API) users(c *gin.Context) {
 	q := "%" + strings.TrimSpace(c.Query("q")) + "%"
@@ -196,6 +218,28 @@ func (a *API) messages(c *gin.Context) {
 	}
 	c.JSON(200, out)
 }
+
+func (a *API) conversationMembers(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || !a.member(id, uid(c)) {
+		fail(c, 403, "无权访问")
+		return
+	}
+	rows, err := a.store.DB.Query(`SELECT u.id,u.display_name,COALESCE(u.public_key,'') FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? ORDER BY u.id`, id)
+	if err != nil {
+		fail(c, 500, "查询失败")
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var memberID int64
+		var name, key string
+		_ = rows.Scan(&memberID, &name, &key)
+		out = append(out, gin.H{"id": memberID, "display_name": name, "public_key": key})
+	}
+	c.JSON(200, out)
+}
 func (a *API) sendMessage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	var in struct {
@@ -206,8 +250,42 @@ func (a *API) sendMessage(c *gin.Context) {
 		return
 	}
 	in.Body = strings.TrimSpace(in.Body)
-	if in.Body == "" || len([]rune(in.Body)) > 4000 {
-		fail(c, 400, "消息不能为空且不能超过4000字")
+	var envelope struct {
+		V          int    `json:"v"`
+		Alg        string `json:"alg"`
+		Recipients map[string]struct {
+			IV string `json:"iv"`
+			CT string `json:"ct"`
+		} `json:"recipients"`
+	}
+	if in.Body == "" || len(in.Body) > 131072 || json.Unmarshal([]byte(in.Body), &envelope) != nil || envelope.V != 1 || envelope.Alg != "P256-HKDF-A256GCM" || len(envelope.Recipients) == 0 {
+		fail(c, 400, "加密消息无效或过大")
+		return
+	}
+	for _, box := range envelope.Recipients {
+		if len(box.IV) < 16 || len(box.CT) < 24 {
+			fail(c, 400, "加密消息封装无效")
+			return
+		}
+	}
+	rows, err := a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
+	if err != nil {
+		fail(c, 500, "校验收件人失败")
+		return
+	}
+	defer rows.Close()
+	expected := 0
+	for rows.Next() {
+		var memberID int64
+		_ = rows.Scan(&memberID)
+		expected++
+		if _, ok := envelope.Recipients[strconv.FormatInt(memberID, 10)]; !ok {
+			fail(c, 400, "加密消息未覆盖全部会话成员")
+			return
+		}
+	}
+	if len(envelope.Recipients) != expected {
+		fail(c, 400, "加密消息收件人不匹配")
 		return
 	}
 	res, err := a.store.DB.Exec(`INSERT INTO messages(conversation_id,sender_id,body) VALUES(?,?,?)`, id, uid(c), in.Body)
@@ -218,7 +296,7 @@ func (a *API) sendMessage(c *gin.Context) {
 	mid, _ := res.LastInsertId()
 	var m store.Message
 	_ = a.store.DB.QueryRow(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`, mid).Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
-	rows, _ := a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
+	rows, _ = a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
 	ids := []int64{}
 	if rows != nil {
 		defer rows.Close()
