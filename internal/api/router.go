@@ -48,6 +48,11 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.POST("/conversations/:id/messages", a.sendMessage)
 	u.POST("/conversations/:id/read", a.readConversation)
 	e.Static("/assets", filepath.Join("web", "client", "assets"))
+	e.GET("/manifest.webmanifest", func(c *gin.Context) { c.File(filepath.Join("web", "client", "manifest.webmanifest")) })
+	e.GET("/sw.js", func(c *gin.Context) {
+		c.Header("Service-Worker-Allowed", "/")
+		c.File(filepath.Join("web", "client", "sw.js"))
+	})
 	e.GET("/", func(c *gin.Context) { c.File(filepath.Join("web", "client", "index.html")) })
 	e.NoRoute(func(c *gin.Context) {
 		if c.Request.Method == http.MethodGet {
