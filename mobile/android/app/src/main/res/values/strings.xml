@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Signal Web</string>
+    <string name="asset_statements">[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"web","site":"https://msg.trip-vn.com"}}]</string>
+</resources>

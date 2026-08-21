@@ -1,0 +1,40 @@
+plugins { id 'com.android.application' }
+
+configurations.configureEach {
+    resolutionStrategy.force 'androidx.browser:browser:1.8.0'
+}
+
+android {
+    namespace 'com.tripvn.msg'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.tripvn.msg'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            if (System.getenv('SIGNAL_KEYSTORE')) {
+                storeFile file(System.getenv('SIGNAL_KEYSTORE'))
+                storePassword System.getenv('SIGNAL_STORE_PASSWORD')
+                keyAlias System.getenv('SIGNAL_KEY_ALIAS') ?: 'signalweb'
+                keyPassword System.getenv('SIGNAL_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv('SIGNAL_KEYSTORE')) signingConfig signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2'
+}

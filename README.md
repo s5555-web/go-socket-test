@@ -66,6 +66,15 @@ chmod +x scripts/run-with-restart.sh
 
 生产环境必须使用 HTTPS/WSS，否则浏览器不会启用密钥模块。该实现尚不是完整 Signal Protocol：没有 Double Ratchet、一次性预密钥、离线密钥恢复或多设备同步，也未经独立密码学审计。服务器仍可观察账号、会话成员、发送时间和密文大小等元数据。
 
+## 生产域名与手机推送
+
+- 客户端：`https://msg.trip-vn.com`
+- 管理后台：`https://msg.trip-vn.com:801`
+- Android APK 使用 Trusted Web Activity，包名为 `com.tripvn.msg`。
+- iOS 16.4 及以上可通过主屏幕 Web App 接收标准 Web Push；iOS 安装配置位于 `mobile/SignalWeb-iOS.mobileconfig`。
+- 服务端使用 VAPID Web Push。推送载荷只包含发送者、会话编号和“端到端加密消息”提示，不包含消息正文。
+- 正式原生 `.ipa` 仍需要 Apple Developer Team、签名证书、描述文件和 APNs 凭据。
+
 ## Socket 稳定性
 
 - **断开与清理**：客户端断开时 `ReadPump` 会退出并调用 `Unregister`，从 Hub 移除并关闭 `Send` 通道，避免 goroutine 与通道泄漏。

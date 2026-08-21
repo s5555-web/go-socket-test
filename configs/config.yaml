@@ -13,3 +13,8 @@ socket:
   write_buffer_size: 1024
   pong_wait_sec: 60
   ping_period_sec: 54
+
+push:
+  subject: "mailto:admin@msg.trip-vn.com"
+  public_key: ""
+  private_key: ""

@@ -1,13 +1,18 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"sket/internal/auth"
 	"sket/internal/store"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func fail(c *gin.Context, code int, msg string) { c.AbortWithStatusJSON(code, gin.H{"error": msg}) }
@@ -338,7 +343,87 @@ func (a *API) sendMessage(c *gin.Context) {
 		}
 	}
 	a.hub.SendTo(ids, gin.H{"type": "message", "data": m})
+	go a.sendPush(ids, uid(c), m)
 	c.JSON(201, m)
+}
+
+type pushSubscriptionInput struct {
+	Endpoint string `json:"endpoint"`
+	Keys     struct {
+		P256dh string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
+func (a *API) pushConfig(c *gin.Context) {
+	c.JSON(200, gin.H{"enabled": a.push.PublicKey != "" && a.push.PrivateKey != "", "public_key": a.push.PublicKey})
+}
+
+func (a *API) savePushSubscription(c *gin.Context) {
+	var in pushSubscriptionInput
+	if c.ShouldBindJSON(&in) != nil || !strings.HasPrefix(in.Endpoint, "https://") || len(in.Endpoint) > 8192 || len(in.Keys.P256dh) < 40 || len(in.Keys.Auth) < 8 {
+		fail(c, 400, "推送订阅格式错误")
+		return
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(in.Endpoint)))
+	_, err := a.store.DB.Exec(`INSERT INTO push_subscriptions(endpoint_hash,user_id,endpoint,p256dh,auth) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id),endpoint=VALUES(endpoint),p256dh=VALUES(p256dh),auth=VALUES(auth)`, hash, uid(c), in.Endpoint, in.Keys.P256dh, in.Keys.Auth)
+	if err != nil {
+		fail(c, 500, "保存推送订阅失败")
+		return
+	}
+	c.Status(204)
+}
+
+func (a *API) deletePushSubscription(c *gin.Context) {
+	var in struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if c.ShouldBindJSON(&in) != nil || in.Endpoint == "" {
+		fail(c, 400, "推送订阅格式错误")
+		return
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(in.Endpoint)))
+	_, _ = a.store.DB.Exec(`DELETE FROM push_subscriptions WHERE endpoint_hash=? AND user_id=?`, hash, uid(c))
+	c.Status(204)
+}
+
+func (a *API) sendPush(userIDs []int64, senderID int64, m store.Message) {
+	if a.push.PublicKey == "" || a.push.PrivateKey == "" {
+		return
+	}
+	ids := make([]interface{}, 0, len(userIDs))
+	marks := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if id != senderID {
+			ids = append(ids, id)
+			marks = append(marks, "?")
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := a.store.DB.Query(`SELECT endpoint_hash,endpoint,p256dh,auth FROM push_subscriptions WHERE user_id IN (`+strings.Join(marks, ",")+`)`, ids...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	payload, _ := json.Marshal(gin.H{"title": m.SenderName, "body": "发来一条端到端加密消息", "conversation_id": m.ConversationID, "url": fmt.Sprintf("/?conversation=%d", m.ConversationID)})
+	for rows.Next() {
+		var hash, endpoint, p256dh, authKey string
+		if rows.Scan(&hash, &endpoint, &p256dh, &authKey) != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{Endpoint: endpoint, Keys: webpush.Keys{P256dh: p256dh, Auth: authKey}}, &webpush.Options{Subscriber: a.push.Subject, VAPIDPublicKey: a.push.PublicKey, VAPIDPrivateKey: a.push.PrivateKey, TTL: 60})
+		cancel()
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 410) {
+			_, _ = a.store.DB.Exec(`DELETE FROM push_subscriptions WHERE endpoint_hash=?`, hash)
+		}
+		_ = err
+	}
 }
 func (a *API) readConversation(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -385,6 +470,7 @@ func (a *API) deleteUser(c *gin.Context) {
 	}
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM conversation_members WHERE user_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM push_subscriptions WHERE user_id=?`, id)
 	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, id)
 	if err != nil {
 		_ = tx.Rollback()

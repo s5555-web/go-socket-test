@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>FullScreen</key><true/>
+            <key>IsRemovable</key><true/>
+            <key>Label</key><string>Signal Web</string>
+            <key>PayloadDescription</key><string>安装 Signal Web 到主屏幕</string>
+            <key>PayloadDisplayName</key><string>Signal Web</string>
+            <key>PayloadIdentifier</key><string>com.tripvn.msg.webclip</string>
+            <key>PayloadType</key><string>com.apple.webClip.managed</string>
+            <key>PayloadUUID</key><string>4EC72D07-8D62-44F4-9A53-D6637B598616</string>
+            <key>PayloadVersion</key><integer>1</integer>
+            <key>Precomposed</key><false/>
+            <key>URL</key><string>https://msg.trip-vn.com/</string>
+        </dict>
+    </array>
+    <key>PayloadDescription</key><string>Signal Web iOS 主屏幕安装配置</string>
+    <key>PayloadDisplayName</key><string>Signal Web</string>
+    <key>PayloadIdentifier</key><string>com.tripvn.msg.profile</string>
+    <key>PayloadOrganization</key><string>trip-vn.com</string>
+    <key>PayloadRemovalDisallowed</key><false/>
+    <key>PayloadType</key><string>Configuration</string>
+    <key>PayloadUUID</key><string>EB7A01E5-C084-4A0D-B3F0-988387531C13</string>
+    <key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>

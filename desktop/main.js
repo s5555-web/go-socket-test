@@ -1,6 +1,6 @@
 const {app,BrowserWindow,ipcMain,nativeImage,session,shell}=require('electron');
 const path=require('path');
-const APP_URL='https://redacted.invalid:802/';
+const APP_URL='https://msg.trip-vn.com/';
 let mainWindow;
 
 app.setAppUserModelId('SignalWeb.Desktop');
