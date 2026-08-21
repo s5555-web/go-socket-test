@@ -27,7 +27,7 @@ func run() int {
 		}
 	}()
 
-	configPath := "configs/config.yaml"
+	configPath := defaultConfigPath()
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
 	}
@@ -76,4 +76,13 @@ func run() int {
 	_ = adminSrv.Shutdown(ctx)
 	fmt.Println("server stopped")
 	return 0
+}
+
+func defaultConfigPath() string {
+	for _, path := range []string{"configs/config.yaml", "server/configs/config.yaml"} {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "configs/config.yaml"
 }

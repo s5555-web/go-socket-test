@@ -18,12 +18,25 @@ type API struct {
 	hub           *socket.Hub
 	push          config.PushConfig
 	attachmentDir string
+	clientDir     string
+	adminDir      string
+}
+
+func firstExistingDir(paths ...string) string {
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+	}
+	return paths[0]
 }
 
 func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
 	attachmentDir := filepath.Join("data", "attachments")
 	_ = os.MkdirAll(attachmentDir, 0700)
-	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push, attachmentDir: attachmentDir}
+	clientDir := firstExistingDir(filepath.Join("web", "client"), filepath.Join("..", "web", "client"))
+	adminDir := firstExistingDir("admin", filepath.Join("..", "admin"))
+	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push, attachmentDir: attachmentDir, clientDir: clientDir, adminDir: adminDir}
 }
 
 func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
@@ -64,16 +77,16 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/push/config", a.pushConfig)
 	u.POST("/push/subscriptions", a.savePushSubscription)
 	u.DELETE("/push/subscriptions", a.deletePushSubscription)
-	e.Static("/assets", filepath.Join("web", "client", "assets"))
-	e.GET("/manifest.webmanifest", func(c *gin.Context) { c.File(filepath.Join("web", "client", "manifest.webmanifest")) })
+	e.Static("/assets", filepath.Join(a.clientDir, "assets"))
+	e.GET("/manifest.webmanifest", func(c *gin.Context) { c.File(filepath.Join(a.clientDir, "manifest.webmanifest")) })
 	e.GET("/sw.js", func(c *gin.Context) {
 		c.Header("Service-Worker-Allowed", "/")
-		c.File(filepath.Join("web", "client", "sw.js"))
+		c.File(filepath.Join(a.clientDir, "sw.js"))
 	})
-	e.GET("/", func(c *gin.Context) { c.File(filepath.Join("web", "client", "index.html")) })
+	e.GET("/", func(c *gin.Context) { c.File(filepath.Join(a.clientDir, "index.html")) })
 	e.NoRoute(func(c *gin.Context) {
 		if c.Request.Method == http.MethodGet {
-			c.File(filepath.Join("web", "client", "index.html"))
+			c.File(filepath.Join(a.clientDir, "index.html"))
 			return
 		}
 		c.JSON(404, gin.H{"error": "not found"})
@@ -92,7 +105,7 @@ func (a *API) AdminEngine() *gin.Engine {
 	g.GET("/stats", a.adminStats)
 	g.GET("/users", a.adminUsers)
 	g.DELETE("/users/:id", a.deleteUser)
-	e.GET("/", func(c *gin.Context) { c.File(filepath.Join("web", "admin", "index.html")) })
-	e.NoRoute(func(c *gin.Context) { c.File(filepath.Join("web", "admin", "index.html")) })
+	e.GET("/", func(c *gin.Context) { c.File(filepath.Join(a.adminDir, "index.html")) })
+	e.NoRoute(func(c *gin.Context) { c.File(filepath.Join(a.adminDir, "index.html")) })
 	return e
 }
