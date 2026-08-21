@@ -11,6 +11,7 @@ type Config struct {
 	Database DatabaseConfig `mapstructure:"database"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	Socket   SocketConfig   `mapstructure:"socket"`
+	Push     PushConfig     `mapstructure:"push"`
 }
 
 type ServerConfig struct {
@@ -30,6 +31,12 @@ type SocketConfig struct {
 	WriteBufferSize int `mapstructure:"write_buffer_size"`
 	PongWaitSec     int `mapstructure:"pong_wait_sec"`
 	PingPeriodSec   int `mapstructure:"ping_period_sec"`
+}
+
+type PushConfig struct {
+	Subject    string `mapstructure:"subject"`
+	PublicKey  string `mapstructure:"public_key"`
+	PrivateKey string `mapstructure:"private_key"`
 }
 
 func Load(path string) (*Config, error) {

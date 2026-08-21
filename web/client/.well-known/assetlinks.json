@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.tripvn.msg",
+      "sha256_cert_fingerprints": [
+        "D8:5C:10:B9:7C:2E:95:8F:EC:22:EE:A0:7B:35:77:C7:A9:8B:0B:F7:C5:72:49:3D:D0:C2:A7:C7:61:62:5C:AE"
+      ]
+    }
+  }
+]

@@ -15,10 +15,11 @@ type API struct {
 	store *store.Store
 	auth  *auth.Manager
 	hub   *socket.Hub
+	push  config.PushConfig
 }
 
 func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
-	return &API{db, auth.New(cfg.Auth.Secret), hub}
+	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push}
 }
 
 func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
@@ -47,6 +48,9 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/conversations/:id/members", a.conversationMembers)
 	u.POST("/conversations/:id/messages", a.sendMessage)
 	u.POST("/conversations/:id/read", a.readConversation)
+	u.GET("/push/config", a.pushConfig)
+	u.POST("/push/subscriptions", a.savePushSubscription)
+	u.DELETE("/push/subscriptions", a.deletePushSubscription)
 	e.Static("/assets", filepath.Join("web", "client", "assets"))
 	e.GET("/manifest.webmanifest", func(c *gin.Context) { c.File(filepath.Join("web", "client", "manifest.webmanifest")) })
 	e.GET("/sw.js", func(c *gin.Context) {
