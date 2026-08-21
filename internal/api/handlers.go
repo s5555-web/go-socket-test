@@ -2,17 +2,24 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"sket/internal/auth"
 	"sket/internal/store"
-	"strconv"
-	"strings"
-	"time"
 )
 
 func fail(c *gin.Context, code int, msg string) { c.AbortWithStatusJSON(code, gin.H{"error": msg}) }
@@ -275,6 +282,92 @@ func (a *API) conversationMembers(c *gin.Context) {
 	}
 	c.JSON(200, out)
 }
+
+const maxEncryptedAttachmentSize = 8*1024*1024 + 64
+
+func (a *API) uploadAttachment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || !a.member(id, uid(c)) {
+		fail(c, 403, "无权上传图片")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxEncryptedAttachmentSize)
+	token := make([]byte, 16)
+	if _, err = rand.Read(token); err != nil {
+		fail(c, 500, "生成附件编号失败")
+		return
+	}
+	attachmentID := hex.EncodeToString(token)
+	path := filepath.Join(a.attachmentDir, attachmentID+".bin")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		fail(c, 500, "保存加密图片失败")
+		return
+	}
+	size, copyErr := io.Copy(file, c.Request.Body)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil || size < 17 || size > maxEncryptedAttachmentSize {
+		_ = os.Remove(path)
+		fail(c, 400, "加密图片无效或超过 8MB")
+		return
+	}
+	if _, err = a.store.DB.Exec(`INSERT INTO encrypted_attachments(id,conversation_id,uploader_id,cipher_size) VALUES(?,?,?,?)`, attachmentID, id, uid(c), size); err != nil {
+		_ = os.Remove(path)
+		fail(c, 500, "记录加密图片失败")
+		return
+	}
+	c.JSON(201, gin.H{"id": attachmentID, "cipher_size": size})
+}
+
+func (a *API) downloadAttachment(c *gin.Context) {
+	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	attachmentID := c.Param("attachment")
+	if err != nil || len(attachmentID) != 32 || !a.member(conversationID, uid(c)) {
+		fail(c, 403, "无权查看图片")
+		return
+	}
+	if _, err = hex.DecodeString(attachmentID); err != nil {
+		fail(c, 404, "图片不存在")
+		return
+	}
+	var size int64
+	err = a.store.DB.QueryRow(`SELECT cipher_size FROM encrypted_attachments WHERE id=? AND conversation_id=? AND message_id IS NOT NULL`, attachmentID, conversationID).Scan(&size)
+	if err != nil {
+		fail(c, 404, "图片不存在")
+		return
+	}
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Length", strconv.FormatInt(size, 10))
+	c.File(filepath.Join(a.attachmentDir, attachmentID+".bin"))
+}
+
+func (a *API) deleteAttachment(c *gin.Context) {
+	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	attachmentID := c.Param("attachment")
+	if err != nil || len(attachmentID) != 32 || !a.member(conversationID, uid(c)) {
+		fail(c, 403, "无权删除图片")
+		return
+	}
+	if _, err = hex.DecodeString(attachmentID); err != nil {
+		fail(c, 404, "图片不存在")
+		return
+	}
+	result, err := a.store.DB.Exec(`DELETE FROM encrypted_attachments WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, attachmentID, conversationID, uid(c))
+	if err != nil {
+		fail(c, 500, "删除图片失败")
+		return
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted != 1 {
+		fail(c, 404, "图片不存在或已经发送")
+		return
+	}
+	_ = os.Remove(filepath.Join(a.attachmentDir, attachmentID+".bin"))
+	c.Status(http.StatusNoContent)
+}
+
 func (a *API) sendMessage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	var in struct {
@@ -286,9 +379,10 @@ func (a *API) sendMessage(c *gin.Context) {
 	}
 	in.Body = strings.TrimSpace(in.Body)
 	var envelope struct {
-		V          int    `json:"v"`
-		Alg        string `json:"alg"`
-		Recipients map[string]struct {
+		V            int    `json:"v"`
+		Alg          string `json:"alg"`
+		AttachmentID string `json:"attachment_id"`
+		Recipients   map[string]struct {
 			IV string `json:"iv"`
 			CT string `json:"ct"`
 		} `json:"recipients"`
@@ -323,12 +417,35 @@ func (a *API) sendMessage(c *gin.Context) {
 		fail(c, 400, "加密消息收件人不匹配")
 		return
 	}
+	if envelope.AttachmentID != "" {
+		if len(envelope.AttachmentID) != 32 {
+			fail(c, 400, "加密图片编号无效")
+			return
+		}
+		var n int
+		if a.store.DB.QueryRow(`SELECT COUNT(*) FROM encrypted_attachments WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, envelope.AttachmentID, id, uid(c)).Scan(&n) != nil || n != 1 {
+			fail(c, 400, "加密图片不存在或已发送")
+			return
+		}
+	}
 	res, err := a.store.DB.Exec(`INSERT INTO messages(conversation_id,sender_id,body) VALUES(?,?,?)`, id, uid(c), in.Body)
 	if err != nil {
 		fail(c, 500, "发送失败")
 		return
 	}
 	mid, _ := res.LastInsertId()
+	if envelope.AttachmentID != "" {
+		result, updateErr := a.store.DB.Exec(`UPDATE encrypted_attachments SET message_id=? WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, mid, envelope.AttachmentID, id, uid(c))
+		var updated int64
+		if updateErr == nil {
+			updated, _ = result.RowsAffected()
+		}
+		if updateErr != nil || updated != 1 {
+			_, _ = a.store.DB.Exec(`DELETE FROM messages WHERE id=?`, mid)
+			fail(c, 409, "加密图片发送冲突，请重试")
+			return
+		}
+	}
 	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET hidden=FALSE WHERE conversation_id=?`, id)
 	var m store.Message
 	_ = a.store.DB.QueryRow(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`, mid).Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
