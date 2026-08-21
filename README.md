@@ -54,6 +54,8 @@ chmod +x scripts/run-with-restart.sh
 | POST | `/api/login` | 登录 |
 | GET | `/api/conversations` | 会话列表 |
 | POST | `/api/conversations/:id/messages` | 发送消息 |
+| POST | `/api/conversations/:id/attachments` | 上传设备端加密后的图片密文 |
+| GET | `/api/conversations/:id/attachments/:attachment` | 下载会话内图片密文 |
 | GET | `/ws?token=...` | 实时消息连接 |
 
 ## 加密设计
@@ -62,6 +64,8 @@ chmod +x scripts/run-with-restart.sh
 - 每条消息通过 ECDH + HKDF-SHA-256 派生会话密钥，再以 AES-256-GCM 分别加密给每位成员。
 - 明文加入随机填充并按区间扩展，降低依据密文长度推测消息内容的风险。
 - 服务端拒绝明文消息、缺少成员密文或收件人不匹配的消息封装。
+- 图片在设备端使用独立的随机 AES-256-GCM 密钥加密，服务端只保存密文；图片密钥、类型、名称和大小随消息封装分别端到端加密给每位成员。
+- 图片上传和下载均校验登录身份与会话成员关系，单图上限为 8MB；未绑定消息的上传可安全撤销。
 - 会话界面显示公钥安全码，成员可通过其他可信渠道比对。
 
 生产环境必须使用 HTTPS/WSS，否则浏览器不会启用密钥模块。该实现尚不是完整 Signal Protocol：没有 Double Ratchet、一次性预密钥、离线密钥恢复或多设备同步，也未经独立密码学审计。服务器仍可观察账号、会话成员、发送时间和密文大小等元数据。

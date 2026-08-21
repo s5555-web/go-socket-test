@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 	"sket/internal/api/socket"
 	"sket/internal/auth"
@@ -12,14 +13,17 @@ import (
 )
 
 type API struct {
-	store *store.Store
-	auth  *auth.Manager
-	hub   *socket.Hub
-	push  config.PushConfig
+	store         *store.Store
+	auth          *auth.Manager
+	hub           *socket.Hub
+	push          config.PushConfig
+	attachmentDir string
 }
 
 func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
-	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push}
+	attachmentDir := filepath.Join("data", "attachments")
+	_ = os.MkdirAll(attachmentDir, 0700)
+	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push, attachmentDir: attachmentDir}
 }
 
 func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
@@ -47,6 +51,9 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/conversations/:id/messages", a.messages)
 	u.GET("/conversations/:id/members", a.conversationMembers)
 	u.POST("/conversations/:id/messages", a.sendMessage)
+	u.POST("/conversations/:id/attachments", a.uploadAttachment)
+	u.DELETE("/conversations/:id/attachments/:attachment", a.deleteAttachment)
+	u.GET("/conversations/:id/attachments/:attachment", a.downloadAttachment)
 	u.POST("/conversations/:id/read", a.readConversation)
 	u.GET("/push/config", a.pushConfig)
 	u.POST("/push/subscriptions", a.savePushSubscription)
