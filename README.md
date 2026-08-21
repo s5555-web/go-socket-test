@@ -12,28 +12,25 @@
 
 ```
 sket/
-├── cmd/server/          # 共享 Go 服务端入口
-├── configs/             # 配置文件
+├── server/              # 完整 Go 后端（go.mod、cmd、internal、configs、scripts）
 ├── web/client/          # Web C 端（独立源码）
-├── web/admin/           # Web 管理端（独立源码）
+├── admin/               # Web 管理后台（独立源码）
 ├── desktop/             # Windows 端（独立源码）
 ├── mobile/android/      # Android 端（独立源码）
 ├── mobile/ios/          # iOS 安装端（独立源码）
-├── internal/
-│   ├── api/             # 路由与 WebSocket
-│   │   └── socket/      # Hub、Client、Handler
-│   └── config/          # 配置加载
-└── go.mod
+├── deploy/              # Nginx 与 systemd 部署配置
+└── go.work              # 根目录 Go 工作区入口
 ```
 
 ## 运行
 
 ```bash
+cd server
 go mod tidy
 go run ./cmd/server
 ```
 
-客户端默认监听 `:802`，管理后台默认监听 `:801`。启动前请创建 `signal_web` 数据库并修改 `configs/config.yaml` 中的数据库 DSN 和认证密钥。
+客户端默认监听 `:802`，管理后台默认监听 `:801`。启动前请创建 `signal_web` 数据库并修改 `server/configs/config.yaml` 中的数据库 DSN 和认证密钥。
 
 首次管理员可先注册普通账号，再执行：
 
@@ -44,8 +41,8 @@ UPDATE users SET is_admin=1 WHERE username='你的用户名';
 **异常自动重启**：若希望进程崩溃后自动重启，可用脚本或进程管理器：
 
 ```bash
-chmod +x scripts/run-with-restart.sh
-./scripts/run-with-restart.sh
+chmod +x server/scripts/run-with-restart.sh
+./server/scripts/run-with-restart.sh
 ```
 
 或使用 systemd / Docker 的 restart 策略（服务非 0 退出时会自动重启）。
@@ -98,6 +95,6 @@ chmod +x scripts/run-with-restart.sh
 
 ## 扩展
 
-- 新 HTTP 接口：在 `internal/api/router.go` 的 `routes()` 里挂路由，或新增 `internal/api/xxx/handler.go`。
-- 新业务（如聊天室）：在 `internal/` 下增加 `service/`、`repository/` 等包，在 `cmd/server/main.go` 中注入并挂到路由。
-- 新配置：在 `internal/config/config.go` 和 `configs/config.yaml` 中增加字段。
+- 新 HTTP 接口：在 `server/internal/api/router.go` 挂路由，或在 `server/internal/api/` 增加处理器。
+- 新业务（如聊天室）：在 `server/internal/` 下增加 `service/`、`repository/` 等包，在 `server/cmd/server/main.go` 中注入。
+- 新配置：在 `server/internal/config/config.go` 和 `server/configs/config.yaml` 中增加字段。
