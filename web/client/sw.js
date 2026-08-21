@@ -1,5 +1,5 @@
-const CACHE='signal-web-shell-v7';
-self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(['/','/assets/app.css','/assets/layout.css','/assets/mobile.css','/assets/chat-extras.css','/assets/crypto.js','/assets/app.js','/assets/icon.svg']))));
+const CACHE='signal-web-shell-v8';
+self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(['/','/assets/app.css','/assets/layout.css','/assets/mobile.css','/assets/chat-extras.css','/assets/friends.css','/assets/crypto.js','/assets/app.js','/assets/icon.svg']))));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;event.respondWith(fetch(event.request).catch(()=>caches.match(event.request)))});
 self.addEventListener('push',event=>{event.waitUntil((async()=>{let data={title:'Signal Web',body:'你有一条新消息',url:'/'};try{data={...data,...event.data.json()}}catch{}const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});if(windows.some(client=>client.visibilityState==='visible'))return;await self.registration.showNotification(data.title,{body:data.body,tag:`conversation-${data.conversation_id||'new'}`,renotify:true,icon:'/assets/icon.svg',badge:'/assets/icon.svg',data:{url:data.url||'/',conversation_id:data.conversation_id}})})())});
