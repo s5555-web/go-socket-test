@@ -12,8 +12,13 @@
 
 ```
 sket/
-├── cmd/server/          # 入口
+├── cmd/server/          # 共享 Go 服务端入口
 ├── configs/             # 配置文件
+├── web/client/          # Web C 端（独立源码）
+├── web/admin/           # Web 管理端（独立源码）
+├── desktop/             # Windows 端（独立源码）
+├── mobile/android/      # Android 端（独立源码）
+├── mobile/ios/          # iOS 安装端（独立源码）
 ├── internal/
 │   ├── api/             # 路由与 WebSocket
 │   │   └── socket/      # Hub、Client、Handler
@@ -53,6 +58,11 @@ chmod +x scripts/run-with-restart.sh
 | POST | `/api/register` | 注册 |
 | POST | `/api/login` | 登录 |
 | GET | `/api/conversations` | 会话列表 |
+| GET | `/api/friends` | 好友列表 |
+| GET | `/api/friend-requests` | 收到的好友申请 |
+| POST | `/api/friend-requests` | 发送好友申请 |
+| PUT | `/api/friend-requests/:id/accept` | 接受好友申请 |
+| DELETE | `/api/friends/:id` | 拒绝申请或删除好友 |
 | POST | `/api/conversations/:id/messages` | 发送消息 |
 | POST | `/api/conversations/:id/attachments` | 上传设备端加密后的图片密文 |
 | GET | `/api/conversations/:id/attachments/:attachment` | 下载会话内图片密文 |
@@ -75,7 +85,7 @@ chmod +x scripts/run-with-restart.sh
 - 客户端：`https://msg.trip-vn.com`
 - 管理后台：`https://msg.trip-vn.com:801`
 - Android APK 使用 Trusted Web Activity，包名为 `com.tripvn.msg`。
-- iOS 16.4 及以上可通过主屏幕 Web App 接收标准 Web Push；iOS 安装配置位于 `mobile/SignalWeb-iOS.mobileconfig`。
+- iOS 16.4 及以上可通过主屏幕 Web App 接收标准 Web Push；iOS 安装配置位于 `mobile/ios/SignalWeb-iOS.mobileconfig`。
 - 服务端使用 VAPID Web Push。推送载荷只包含发送者、会话编号和“端到端加密消息”提示，不包含消息正文。
 - 正式原生 `.ipa` 仍需要 Apple Developer Team、签名证书、描述文件和 APNs 凭据。
 

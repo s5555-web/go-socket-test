@@ -1,0 +1,51 @@
+.profileIdentity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.profileIdentity .avatar { width: 42px; height: 42px; flex-basis: 42px; }
+.profileIdentity > span:last-child { min-width: 0; }
+.profileIdentity b, .profileIdentity small {
+  display: block;
+  max-width: 105px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profileIdentity small { margin-top: 2px; color: #858995; font-size: 12px; }
+.headerActions .icon { width: 36px; height: 36px; padding: 0; }
+.sideNav { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; flex: 0 0 auto; padding: 0 12px 9px; border-bottom: 1px solid #eceef3; }
+.sideNav button { position: relative; width: auto; padding: 9px; border-radius: 10px; background: transparent; color: #737783; }
+.sideNav button.active { background: #eaf1ff; color: #2c6bed; }
+.sideNav span { display: inline-grid; min-width: 18px; height: 18px; place-items: center; margin-left: 3px; padding: 0 5px; border-radius: 9px; background: #e53935; color: #fff; font-size: 10px; }
+.sideView { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+.sideView section { margin: 0; padding: 12px 12px 4px; background: transparent; box-shadow: none; }
+.sideView h3 { margin: 3px 5px 9px; color: #747887; font-size: 12px; text-transform: uppercase; }
+.friendRow, .requestRow, .searchUser { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 12px; }
+.friendRow:hover, .searchUser:hover { background: #f3f6fc; }
+.friendInfo { min-width: 0; flex: 1; }
+.friendInfo b, .friendInfo small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friendInfo small { margin-top: 3px; color: #858995; font-size: 12px; }
+.friendActions { display: flex; gap: 5px; }
+.friendActions button, .relationButton { width: auto; min-width: 34px; padding: 7px 9px; border-radius: 9px; font-size: 12px; }
+.friendActions .reject, .relationButton.remove { background: #f5e9e9; color: #9e3d3d; }
+.relationButton.pending, .relationButton.outgoing { background: #eef0f4; color: #777; }
+.relationButton.friend { background: #e9f5ee; color: #288153; }
+.listEmpty { padding: 22px 12px; color: #969aa5; text-align: center; font-size: 13px; }
+.friendModal { width: min(460px, 88vw); }
+.friendModal > p { margin-top: -8px; color: #777; font-size: 13px; }
+.friendResults { max-height: 360px; overflow-y: auto; }
+.registerField { display: none !important; }
+.auth.registering .registerField { display: block !important; }
+@media (max-width: 720px) {
+  .profileIdentity b, .profileIdentity small { max-width: 110px; }
+  .sideView { height: auto; }
+  .sideNav { padding-bottom: 8px; }
+  .friendRow, .requestRow { padding: 11px 8px; }
+  .friendModal { width: 100%; }
+}

@@ -45,6 +45,7 @@ func (a *API) register(c *gin.Context) {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
 		DisplayName string `json:"display_name"`
+		About       string `json:"about"`
 	}
 	if c.ShouldBindJSON(&in) != nil {
 		fail(c, 400, "参数错误")
@@ -52,12 +53,13 @@ func (a *API) register(c *gin.Context) {
 	}
 	in.Username = strings.ToLower(strings.TrimSpace(in.Username))
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
-	if len(in.Username) < 3 || len(in.Password) < 6 || in.DisplayName == "" {
+	in.About = strings.TrimSpace(in.About)
+	if len(in.Username) < 3 || len(in.Username) > 40 || len(in.Password) < 6 || in.DisplayName == "" || len([]rune(in.DisplayName)) > 80 || len([]rune(in.About)) > 160 {
 		fail(c, 400, "用户名至少3位，密码至少6位，昵称不能为空")
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
-	res, err := a.store.DB.Exec(`INSERT INTO users(username,password_hash,display_name) VALUES(?,?,?)`, in.Username, string(hash), in.DisplayName)
+	res, err := a.store.DB.Exec(`INSERT INTO users(username,password_hash,display_name,about) VALUES(?,?,?,?)`, in.Username, string(hash), in.DisplayName, in.About)
 	if err != nil {
 		fail(c, 409, "用户名已存在")
 		return
@@ -86,12 +88,34 @@ func (a *API) login(c *gin.Context) {
 }
 func (a *API) me(c *gin.Context) {
 	var u store.User
-	err := a.store.DB.QueryRow(`SELECT id,username,display_name,avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.IsAdmin, &u.CreatedAt)
+	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.IsAdmin, &u.CreatedAt)
 	if err != nil {
 		fail(c, 404, "用户不存在")
 		return
 	}
 	c.JSON(200, u)
+}
+
+func (a *API) updateProfile(c *gin.Context) {
+	var in struct {
+		DisplayName string `json:"display_name"`
+		About       string `json:"about"`
+	}
+	if c.ShouldBindJSON(&in) != nil {
+		fail(c, 400, "资料格式错误")
+		return
+	}
+	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	in.About = strings.TrimSpace(in.About)
+	if in.DisplayName == "" || len([]rune(in.DisplayName)) > 80 || len([]rune(in.About)) > 160 {
+		fail(c, 400, "昵称不能为空，个人简介不能超过160字")
+		return
+	}
+	if _, err := a.store.DB.Exec(`UPDATE users SET display_name=?,about=? WHERE id=?`, in.DisplayName, in.About, uid(c)); err != nil {
+		fail(c, 500, "保存资料失败")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (a *API) setPublicKey(c *gin.Context) {
@@ -131,8 +155,13 @@ func (a *API) setPublicKey(c *gin.Context) {
 	c.Status(204)
 }
 func (a *API) users(c *gin.Context) {
-	q := "%" + strings.TrimSpace(c.Query("q")) + "%"
-	rows, err := a.store.DB.Query(`SELECT id,username,display_name,avatar,is_admin,created_at FROM users WHERE id<>? AND (username LIKE ? OR display_name LIKE ?) ORDER BY display_name LIMIT 50`, uid(c), q, q)
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		c.JSON(200, []store.User{})
+		return
+	}
+	q := "%" + query + "%"
+	rows, err := a.store.DB.Query(`SELECT u.id,u.username,u.display_name,COALESCE(u.about,''),u.avatar,u.is_admin,u.created_at,CASE WHEN f.status='accepted' THEN 'friend' WHEN f.status='pending' AND f.requested_by=? THEN 'outgoing' WHEN f.status='pending' THEN 'incoming' ELSE 'none' END FROM users u LEFT JOIN friendships f ON f.user_low_id=LEAST(u.id,?) AND f.user_high_id=GREATEST(u.id,?) WHERE u.id<>? AND (u.username LIKE ? OR u.display_name LIKE ?) ORDER BY u.display_name LIMIT 50`, uid(c), uid(c), uid(c), uid(c), q, q)
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -141,10 +170,136 @@ func (a *API) users(c *gin.Context) {
 	out := []store.User{}
 	for rows.Next() {
 		var u store.User
-		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.IsAdmin, &u.CreatedAt)
+		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.CreatedAt, &u.Relationship)
 		out = append(out, u)
 	}
 	c.JSON(200, out)
+}
+
+func friendPair(a, b int64) (int64, int64) {
+	if a < b {
+		return a, b
+	}
+	return b, a
+}
+
+func (a *API) areFriends(first, second int64) bool {
+	low, high := friendPair(first, second)
+	var n int
+	return a.store.DB.QueryRow(`SELECT COUNT(*) FROM friendships WHERE user_low_id=? AND user_high_id=? AND status='accepted'`, low, high).Scan(&n) == nil && n == 1
+}
+
+func (a *API) friends(c *gin.Context) {
+	rows, err := a.store.DB.Query(`SELECT u.id,u.username,u.display_name,COALESCE(u.about,''),u.avatar,u.is_admin,u.created_at FROM friendships f JOIN users u ON u.id=IF(f.user_low_id=?,f.user_high_id,f.user_low_id) WHERE (f.user_low_id=? OR f.user_high_id=?) AND f.status='accepted' ORDER BY u.display_name`, uid(c), uid(c), uid(c))
+	if err != nil {
+		fail(c, 500, "读取好友失败")
+		return
+	}
+	defer rows.Close()
+	out := []store.User{}
+	for rows.Next() {
+		var u store.User
+		if rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.CreatedAt) == nil {
+			u.Relationship = "friend"
+			out = append(out, u)
+		}
+	}
+	c.JSON(200, out)
+}
+
+func (a *API) friendRequests(c *gin.Context) {
+	rows, err := a.store.DB.Query(`SELECT u.id,u.username,u.display_name,COALESCE(u.about,''),u.avatar,u.is_admin,u.created_at FROM friendships f JOIN users u ON u.id=f.requested_by WHERE (f.user_low_id=? OR f.user_high_id=?) AND f.status='pending' AND f.requested_by<>? ORDER BY f.created_at DESC`, uid(c), uid(c), uid(c))
+	if err != nil {
+		fail(c, 500, "读取好友申请失败")
+		return
+	}
+	defer rows.Close()
+	out := []store.User{}
+	for rows.Next() {
+		var u store.User
+		if rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.CreatedAt) == nil {
+			u.Relationship = "incoming"
+			out = append(out, u)
+		}
+	}
+	c.JSON(200, out)
+}
+
+func (a *API) requestFriend(c *gin.Context) {
+	var in struct {
+		UserID int64 `json:"user_id"`
+	}
+	if c.ShouldBindJSON(&in) != nil || in.UserID <= 0 || in.UserID == uid(c) {
+		fail(c, 400, "好友账号无效")
+		return
+	}
+	var exists int
+	if a.store.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE id=?`, in.UserID).Scan(&exists) != nil || exists != 1 {
+		fail(c, 404, "用户不存在")
+		return
+	}
+	low, high := friendPair(uid(c), in.UserID)
+	_, err := a.store.DB.Exec(`INSERT INTO friendships(user_low_id,user_high_id,requested_by,status) VALUES(?,?,?,'pending')`, low, high, uid(c))
+	if err != nil {
+		var status string
+		var requestedBy int64
+		if a.store.DB.QueryRow(`SELECT status,requested_by FROM friendships WHERE user_low_id=? AND user_high_id=?`, low, high).Scan(&status, &requestedBy) == nil {
+			if status == "accepted" {
+				fail(c, 409, "对方已经是你的好友")
+			} else if requestedBy == in.UserID {
+				fail(c, 409, "对方已向你发送申请，请在好友申请中确认")
+			} else {
+				fail(c, 409, "好友申请已发送")
+			}
+			return
+		}
+		fail(c, 500, "发送好友申请失败")
+		return
+	}
+	a.hub.SendTo([]int64{in.UserID}, gin.H{"type": "friendship", "action": "requested", "user_id": uid(c)})
+	c.Status(http.StatusCreated)
+}
+
+func (a *API) acceptFriend(c *gin.Context) {
+	otherID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	low, high := friendPair(uid(c), otherID)
+	if err != nil || otherID <= 0 || otherID == uid(c) {
+		fail(c, 400, "好友申请无效")
+		return
+	}
+	result, err := a.store.DB.Exec(`UPDATE friendships SET status='accepted' WHERE user_low_id=? AND user_high_id=? AND requested_by=? AND status='pending'`, low, high, otherID)
+	if err != nil {
+		fail(c, 500, "接受好友失败")
+		return
+	}
+	updated, _ := result.RowsAffected()
+	if updated != 1 {
+		fail(c, 404, "好友申请不存在")
+		return
+	}
+	a.hub.SendTo([]int64{otherID}, gin.H{"type": "friendship", "action": "accepted", "user_id": uid(c)})
+	c.Status(http.StatusNoContent)
+}
+
+func (a *API) removeFriend(c *gin.Context) {
+	otherID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	low, high := friendPair(uid(c), otherID)
+	if err != nil || otherID <= 0 || otherID == uid(c) {
+		fail(c, 400, "好友账号无效")
+		return
+	}
+	result, err := a.store.DB.Exec(`DELETE FROM friendships WHERE user_low_id=? AND user_high_id=?`, low, high)
+	if err != nil {
+		fail(c, 500, "处理好友关系失败")
+		return
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted != 1 {
+		fail(c, 404, "好友关系不存在")
+		return
+	}
+	a.hub.SendTo([]int64{otherID}, gin.H{"type": "friendship", "action": "removed", "user_id": uid(c)})
+	c.Status(http.StatusNoContent)
 }
 
 func (a *API) conversations(c *gin.Context) {
@@ -177,6 +332,12 @@ func (a *API) createConversation(c *gin.Context) {
 		if id > 0 && !seen[id] {
 			members = append(members, id)
 			seen[id] = true
+		}
+	}
+	for _, memberID := range members[1:] {
+		if !a.areFriends(uid(c), memberID) {
+			fail(c, 403, "只能与好友创建对话")
+			return
 		}
 	}
 	isGroup := len(members) > 2
@@ -560,7 +721,7 @@ func (a *API) adminStats(c *gin.Context) {
 	c.JSON(200, gin.H{"users": users, "conversations": convs, "messages": msgs})
 }
 func (a *API) adminUsers(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT id,username,display_name,avatar,is_admin,created_at FROM users ORDER BY id DESC LIMIT 200`)
+	rows, err := a.store.DB.Query(`SELECT id,username,display_name,COALESCE(about,''),avatar,is_admin,created_at FROM users ORDER BY id DESC LIMIT 200`)
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -569,7 +730,7 @@ func (a *API) adminUsers(c *gin.Context) {
 	out := []store.User{}
 	for rows.Next() {
 		var u store.User
-		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Avatar, &u.IsAdmin, &u.CreatedAt)
+		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.CreatedAt)
 		out = append(out, u)
 	}
 	c.JSON(200, out)
@@ -588,6 +749,7 @@ func (a *API) deleteUser(c *gin.Context) {
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM conversation_members WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM push_subscriptions WHERE user_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM friendships WHERE user_low_id=? OR user_high_id=?`, id, id)
 	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, id)
 	if err != nil {
 		_ = tx.Rollback()
