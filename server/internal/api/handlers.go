@@ -304,7 +304,7 @@ func (a *API) removeFriend(c *gin.Context) {
 }
 
 func (a *API) conversations(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,(SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>?) FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(id) FROM messages WHERE conversation_id=x.id) WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c))
+	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,GREATEST((SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>?),IF(cm.manual_unread,1,0)),cm.manual_unread,cm.pinned,cm.archived,cm.muted_until FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(id) FROM messages WHERE conversation_id=x.id) WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY cm.pinned DESC,COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c))
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -313,7 +313,8 @@ func (a *API) conversations(c *gin.Context) {
 	out := []store.Conversation{}
 	for rows.Next() {
 		var x store.Conversation
-		_ = rows.Scan(&x.ID, &x.Name, &x.IsGroup, &x.LastMessage, &x.LastAt, &x.Unread)
+		_ = rows.Scan(&x.ID, &x.Name, &x.IsGroup, &x.LastMessage, &x.LastAt, &x.Unread, &x.ManualUnread, &x.Pinned, &x.Archived, &x.MutedUntil)
+		x.Muted = x.MutedUntil != nil && x.MutedUntil.After(time.Now())
 		out = append(out, x)
 	}
 	c.JSON(200, out)
@@ -355,7 +356,7 @@ func (a *API) createConversation(c *gin.Context) {
 		var existing int64
 		err = tx.QueryRow(`SELECT cm.conversation_id FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id AND x.is_group=0 WHERE cm.user_id IN (?,?) GROUP BY cm.conversation_id HAVING COUNT(*)=2 LIMIT 1`, members[0], members[1]).Scan(&existing)
 		if err == nil {
-			_, _ = tx.Exec(`UPDATE conversation_members SET hidden=FALSE WHERE conversation_id=? AND user_id=?`, existing, uid(c))
+			_, _ = tx.Exec(`UPDATE conversation_members SET hidden=FALSE,archived=FALSE WHERE conversation_id=? AND user_id=?`, existing, uid(c))
 			_ = tx.Commit()
 			c.JSON(200, gin.H{"id": existing})
 			return
@@ -393,6 +394,116 @@ func (a *API) deleteConversation(c *gin.Context) {
 		return
 	}
 	c.Status(204)
+}
+
+func (a *API) updateConversationState(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	var in struct {
+		Action      string `json:"action"`
+		MuteSeconds int64  `json:"mute_seconds"`
+	}
+	if err != nil || c.ShouldBindJSON(&in) != nil || !a.member(id, uid(c)) {
+		fail(c, 404, "会话不存在")
+		return
+	}
+	var query string
+	var args []interface{}
+	switch in.Action {
+	case "mark_unread":
+		query = `UPDATE conversation_members SET manual_unread=TRUE WHERE conversation_id=? AND user_id=?`
+	case "pin":
+		query = `UPDATE conversation_members SET pinned=TRUE,archived=FALSE WHERE conversation_id=? AND user_id=?`
+	case "unpin":
+		query = `UPDATE conversation_members SET pinned=FALSE WHERE conversation_id=? AND user_id=?`
+	case "archive":
+		query = `UPDATE conversation_members SET archived=TRUE,pinned=FALSE WHERE conversation_id=? AND user_id=?`
+	case "unarchive":
+		query = `UPDATE conversation_members SET archived=FALSE WHERE conversation_id=? AND user_id=?`
+	case "unmute":
+		query = `UPDATE conversation_members SET muted_until=NULL WHERE conversation_id=? AND user_id=?`
+	case "mute":
+		var muteUntil time.Time
+		if in.MuteSeconds == -1 {
+			muteUntil = time.Date(2099, time.December, 31, 23, 59, 59, 0, time.Local)
+		} else if in.MuteSeconds == 3600 || in.MuteSeconds == 28800 || in.MuteSeconds == 604800 {
+			muteUntil = time.Now().Add(time.Duration(in.MuteSeconds) * time.Second)
+		} else {
+			fail(c, 400, "静音时长无效")
+			return
+		}
+		query = `UPDATE conversation_members SET muted_until=? WHERE conversation_id=? AND user_id=?`
+		args = append(args, muteUntil)
+	default:
+		fail(c, 400, "会话操作无效")
+		return
+	}
+	args = append(args, id, uid(c))
+	if _, err = a.store.DB.Exec(query, args...); err != nil {
+		fail(c, 500, "更新会话失败")
+		return
+	}
+	a.hub.SendTo([]int64{uid(c)}, gin.H{"type": "conversation", "action": "state", "conversation_id": id})
+	c.Status(http.StatusNoContent)
+}
+
+func (a *API) clearConversationMessages(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || !a.member(id, uid(c)) {
+		fail(c, 404, "会话不存在")
+		return
+	}
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		fail(c, 500, "清除失败")
+		return
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	memberRows, err := tx.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=? FOR UPDATE`, id)
+	if err != nil {
+		rollback()
+		fail(c, 500, "清除失败")
+		return
+	}
+	members := []int64{}
+	for memberRows.Next() {
+		var memberID int64
+		if memberRows.Scan(&memberID) == nil {
+			members = append(members, memberID)
+		}
+	}
+	_ = memberRows.Close()
+	attachmentRows, err := tx.Query(`SELECT id FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL FOR UPDATE`, id)
+	if err != nil {
+		rollback()
+		fail(c, 500, "清除失败")
+		return
+	}
+	attachmentIDs := []string{}
+	for attachmentRows.Next() {
+		var attachmentID string
+		if attachmentRows.Scan(&attachmentID) == nil {
+			attachmentIDs = append(attachmentIDs, attachmentID)
+		}
+	}
+	_ = attachmentRows.Close()
+	if _, err = tx.Exec(`DELETE FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL`, id); err == nil {
+		_, err = tx.Exec(`DELETE FROM messages WHERE conversation_id=?`, id)
+	}
+	if err == nil {
+		_, err = tx.Exec(`UPDATE conversation_members SET last_read_message_id=0,manual_unread=FALSE WHERE conversation_id=?`, id)
+	}
+	if err != nil || tx.Commit() != nil {
+		rollback()
+		fail(c, 500, "清除失败")
+		return
+	}
+	for _, attachmentID := range attachmentIDs {
+		_ = os.Remove(filepath.Join(a.attachmentDir, attachmentID+".bin"))
+	}
+	a.hub.SendTo(members, gin.H{"type": "conversation", "action": "cleared", "conversation_id": id, "actor_id": uid(c)})
+	c.Status(http.StatusNoContent)
 }
 func (a *API) member(conversation, user int64) bool {
 	var n int
@@ -585,16 +696,23 @@ func (a *API) sendMessage(c *gin.Context) {
 		fail(c, 400, "加密消息无效或过大")
 		return
 	}
-	rows, err := a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
+	rows, err := a.store.DB.Query(`SELECT user_id,COALESCE(muted_until>NOW(),FALSE) FROM conversation_members WHERE conversation_id=?`, id)
 	if err != nil {
 		fail(c, 500, "校验收件人失败")
 		return
 	}
 	defer rows.Close()
 	expected := 0
+	ids := []int64{}
+	pushIDs := []int64{}
 	for rows.Next() {
 		var memberID int64
-		_ = rows.Scan(&memberID)
+		var muted bool
+		_ = rows.Scan(&memberID, &muted)
+		ids = append(ids, memberID)
+		if !muted {
+			pushIDs = append(pushIDs, memberID)
+		}
 		expected++
 		if _, ok := envelope.Recipients[strconv.FormatInt(memberID, 10)]; !ok {
 			fail(c, 400, "加密消息未覆盖全部会话成员")
@@ -630,21 +748,12 @@ func (a *API) sendMessage(c *gin.Context) {
 			return
 		}
 	}
-	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET hidden=FALSE WHERE conversation_id=?`, id)
+	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET hidden=FALSE,archived=FALSE WHERE conversation_id=?`, id)
+	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET last_read_message_id=?,manual_unread=FALSE WHERE conversation_id=? AND user_id=?`, mid, id, uid(c))
 	var m store.Message
 	_ = a.store.DB.QueryRow(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`, mid).Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
-	rows, _ = a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
-	ids := []int64{}
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var x int64
-			_ = rows.Scan(&x)
-			ids = append(ids, x)
-		}
-	}
 	a.hub.SendTo(ids, gin.H{"type": "message", "data": m})
-	go a.sendPush(ids, uid(c), m)
+	go a.sendPush(pushIDs, uid(c), m)
 	c.JSON(201, m)
 }
 
@@ -732,7 +841,7 @@ func (a *API) readConversation(c *gin.Context) {
 		fail(c, 403, "无权访问")
 		return
 	}
-	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET last_read_message_id=COALESCE((SELECT MAX(id) FROM messages WHERE conversation_id=?),0) WHERE conversation_id=? AND user_id=?`, id, id, uid(c))
+	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET last_read_message_id=COALESCE((SELECT MAX(id) FROM messages WHERE conversation_id=?),0),manual_unread=FALSE WHERE conversation_id=? AND user_id=?`, id, id, uid(c))
 	c.Status(204)
 }
 
