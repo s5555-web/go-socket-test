@@ -42,7 +42,9 @@ func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
 func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
-	e.Use(gin.Logger(), gin.Recovery())
+	// WebSocket authentication is supplied in the browser-compatible query string.
+	// Never copy that short-lived credential into the service access log.
+	e.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/ws"}}), gin.Recovery())
 	sock := &socket.Handler{Hub: a.hub, Authorize: func(t string) (int64, error) { c, err := a.auth.Parse(t); return c.UserID, err }}
 	sock.Config.ReadBufferSize = cfg.Socket.ReadBufferSize
 	sock.Config.WriteBufferSize = cfg.Socket.WriteBufferSize
