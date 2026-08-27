@@ -49,3 +49,28 @@
   .friendRow, .requestRow { padding: 11px 8px; }
   .friendModal { width: 100%; }
 }
+
+.archiveToggle { width: calc(100% - 24px); margin: 8px 12px; padding: 10px 12px; background: #f0f2f6; color: #5f6470; text-align: left; }
+.archiveToggle span { float: right; }
+.chat.pinned { background: #f8f9fc; }
+.chatIndicators { display: inline-flex; align-items: center; gap: 5px; color: #777d89; font-size: 13px; }
+
+#conversationMenu { position: fixed; z-index: 1600; width: 264px; max-height: calc(100dvh - 16px); overflow-y: auto; padding: 8px; border: 1px solid #ffffff14; border-radius: 19px; background: #28282a; color: #f7f7f8; box-shadow: 0 20px 52px #0007; user-select: none; }
+#conversationMenu[hidden] { display: none; }
+#conversationMenu > button,.contextSubmenuWrap > button { display: flex; align-items: center; width: 100%; min-height: 50px; gap: 13px; padding: 10px 13px; border-radius: 12px; background: transparent; color: inherit; text-align: left; font-size: 17px; font-weight: 650; }
+#conversationMenu button:hover,.contextSubmenuWrap:hover > button,.contextSubmenuWrap:focus-within > button { background: #3a3a3d; }
+#conversationMenu svg { width: 27px; height: 27px; flex: 0 0 27px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+#conversationMenu button span { flex: 1; }
+#conversationMenu button b { font-size: 28px; font-weight: 400; line-height: 1; }
+#conversationMenu .dangerSoft { color: #ffd2d2; }
+#conversationMenu .danger { color: #ff8f8f; }
+.contextDivider { height: 1px; margin: 5px 8px; background: #ffffff17; }
+.contextSubmenuWrap { position: relative; }
+.contextSubmenu { position: absolute; z-index: 1; top: -8px; left: calc(100% - 2px); display: none; width: 194px; padding: 7px; border: 1px solid #ffffff14; border-radius: 15px; background: #28282a; box-shadow: 0 16px 40px #0007; }
+.contextSubmenuWrap:hover .contextSubmenu,#conversationMenu.submenuOpen .contextSubmenu { display: block; }
+.contextSubmenu button { display: block; width: 100%; padding: 11px 12px; border-radius: 9px; background: transparent; color: #f7f7f8; text-align: left; font-size: 15px; font-weight: 600; }
+
+@media (max-width: 720px) {
+  #conversationMenu { width: min(264px, calc(100vw - 16px)); }
+  .contextSubmenu { position: static; width: 100%; margin-top: 2px; padding: 4px; border: 0; border-radius: 10px; background: #202022; box-shadow: none; }
+}
