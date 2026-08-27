@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -304,7 +305,7 @@ func (a *API) removeFriend(c *gin.Context) {
 }
 
 func (a *API) conversations(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,GREATEST((SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>?),IF(cm.manual_unread,1,0)),cm.manual_unread,cm.pinned,cm.archived,cm.muted_until FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(id) FROM messages WHERE conversation_id=x.id) WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY cm.pinned DESC,COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c))
+	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,COALESCE(m.body,''),m.created_at,GREATEST((SELECT COUNT(*) FROM messages um WHERE um.conversation_id=x.id AND um.id>cm.last_read_message_id AND um.sender_id<>? AND NOT EXISTS(SELECT 1 FROM message_deletions md WHERE md.message_id=um.id AND md.user_id=?)),IF(cm.manual_unread,1,0)),cm.manual_unread,cm.pinned,cm.archived,cm.muted_until FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id LEFT JOIN messages m ON m.id=(SELECT MAX(mm.id) FROM messages mm WHERE mm.conversation_id=x.id AND NOT EXISTS(SELECT 1 FROM message_deletions md2 WHERE md2.message_id=mm.id AND md2.user_id=?)) WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY cm.pinned DESC,COALESCE(m.created_at,x.created_at) DESC`, uid(c), uid(c), uid(c), uid(c), uid(c))
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -488,7 +489,10 @@ func (a *API) clearConversationMessages(c *gin.Context) {
 		}
 	}
 	_ = attachmentRows.Close()
-	if _, err = tx.Exec(`DELETE FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL`, id); err == nil {
+	if _, err = tx.Exec(`DELETE md FROM message_deletions md JOIN messages m ON m.id=md.message_id WHERE m.conversation_id=?`, id); err == nil {
+		_, err = tx.Exec(`DELETE FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL`, id)
+	}
+	if err == nil {
 		_, err = tx.Exec(`DELETE FROM messages WHERE conversation_id=?`, id)
 	}
 	if err == nil {
@@ -515,7 +519,7 @@ func (a *API) messages(c *gin.Context) {
 		fail(c, 403, "无权访问")
 		return
 	}
-	rows, err := a.store.DB.Query(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id DESC LIMIT 100`, id)
+	rows, err := a.store.DB.Query(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND NOT EXISTS(SELECT 1 FROM message_deletions md WHERE md.message_id=m.id AND md.user_id=?) ORDER BY m.id DESC LIMIT 100`, id, uid(c))
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -532,6 +536,80 @@ func (a *API) messages(c *gin.Context) {
 		out[len(rev)-1-i] = rev[i]
 	}
 	c.JSON(200, out)
+}
+
+func (a *API) deleteMessage(c *gin.Context) {
+	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	messageID, messageErr := strconv.ParseInt(c.Param("message"), 10, 64)
+	if err != nil || messageErr != nil || messageID <= 0 || !a.member(conversationID, uid(c)) {
+		fail(c, 404, "消息不存在")
+		return
+	}
+	var senderID int64
+	var attachmentID string
+	err = a.store.DB.QueryRow(`SELECT m.sender_id,COALESCE(ea.id,'') FROM messages m LEFT JOIN encrypted_attachments ea ON ea.message_id=m.id WHERE m.id=? AND m.conversation_id=? LIMIT 1`, messageID, conversationID).Scan(&senderID, &attachmentID)
+	if err != nil {
+		fail(c, 404, "消息不存在")
+		return
+	}
+	scope := c.DefaultQuery("scope", "self")
+	if scope == "self" {
+		if _, err = a.store.DB.Exec(`INSERT IGNORE INTO message_deletions(message_id,user_id) VALUES(?,?)`, messageID, uid(c)); err != nil {
+			fail(c, 500, "删除消息失败")
+			return
+		}
+		a.hub.SendTo([]int64{uid(c)}, gin.H{"type": "conversation", "action": "message_deleted", "scope": "self", "conversation_id": conversationID, "message_id": messageID, "actor_id": uid(c)})
+		c.Status(http.StatusNoContent)
+		return
+	}
+	if scope != "all" {
+		fail(c, 400, "删除范围无效")
+		return
+	}
+	if senderID != uid(c) {
+		fail(c, 403, "只能撤回自己发送的消息")
+		return
+	}
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		fail(c, 500, "撤回消息失败")
+		return
+	}
+	memberRows, err := tx.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=? FOR UPDATE`, conversationID)
+	if err != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "撤回消息失败")
+		return
+	}
+	members := []int64{}
+	for memberRows.Next() {
+		var memberID int64
+		if memberRows.Scan(&memberID) == nil {
+			members = append(members, memberID)
+		}
+	}
+	_ = memberRows.Close()
+	if _, err = tx.Exec(`DELETE FROM message_deletions WHERE message_id=?`, messageID); err == nil {
+		_, err = tx.Exec(`DELETE FROM encrypted_attachments WHERE message_id=?`, messageID)
+	}
+	var deleted int64
+	if err == nil {
+		var result sql.Result
+		result, err = tx.Exec(`DELETE FROM messages WHERE id=? AND conversation_id=? AND sender_id=?`, messageID, conversationID, uid(c))
+		if err == nil {
+			deleted, _ = result.RowsAffected()
+		}
+	}
+	if err != nil || deleted != 1 || tx.Commit() != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "撤回消息失败")
+		return
+	}
+	if attachmentID != "" {
+		_ = os.Remove(filepath.Join(a.attachmentDir, attachmentID+".bin"))
+	}
+	a.hub.SendTo(members, gin.H{"type": "conversation", "action": "message_deleted", "scope": "all", "conversation_id": conversationID, "message_id": messageID, "actor_id": uid(c)})
+	c.Status(http.StatusNoContent)
 }
 
 func (a *API) conversationMembers(c *gin.Context) {
@@ -878,6 +956,8 @@ func (a *API) deleteUser(c *gin.Context) {
 		fail(c, 500, "删除失败")
 		return
 	}
+	_, _ = tx.Exec(`DELETE md FROM message_deletions md JOIN messages m ON m.id=md.message_id WHERE m.sender_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM message_deletions WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM conversation_members WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM push_subscriptions WHERE user_id=?`, id)
