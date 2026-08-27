@@ -72,6 +72,7 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.PUT("/conversations/:id/state", a.updateConversationState)
 	u.GET("/conversations/:id/messages", a.messages)
 	u.DELETE("/conversations/:id/messages", a.clearConversationMessages)
+	u.DELETE("/conversations/:id/messages/:message", a.deleteMessage)
 	u.GET("/conversations/:id/members", a.conversationMembers)
 	u.POST("/conversations/:id/messages", a.sendMessage)
 	u.POST("/conversations/:id/attachments", a.uploadAttachment)
