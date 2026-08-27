@@ -8,3 +8,10 @@ aside>header,.search,.contacts{flex:0 0 auto}
 #room{min-width:0;min-height:0;overflow:hidden}
 #messages{min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain}
 #composer{flex:0 0 auto}
+.daySeparator{align-self:stretch;display:flex;align-items:center;gap:12px;margin:14px 0 8px;color:#777d89;font-size:12px;font-weight:700;letter-spacing:.02em}
+.daySeparator::before,.daySeparator::after{content:'';height:1px;flex:1;background:#dfe2e9}
+.daySeparator span{flex:0 0 auto;padding:5px 10px;border-radius:999px;background:#eceef3}
+#room header small[data-state]{display:flex;align-items:center;gap:5px}
+#room header small[data-state]::after{content:'';order:-1;width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#e0a72f}
+#room header small[data-state="connected"]::after{background:#25a65a}
+#room header small[data-state="offline"]::after{background:#d04a4a}

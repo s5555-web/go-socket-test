@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -529,6 +530,46 @@ func (a *API) deleteAttachment(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+type encryptedRecipientBox struct {
+	IV string `json:"iv"`
+	CT string `json:"ct"`
+}
+
+type encryptedEnvelope struct {
+	V            int                              `json:"v"`
+	Alg          string                           `json:"alg"`
+	AttachmentID string                           `json:"attachment_id"`
+	Recipients   map[string]encryptedRecipientBox `json:"recipients"`
+}
+
+func validateEncryptedEnvelope(value string) (encryptedEnvelope, error) {
+	var envelope encryptedEnvelope
+	if value == "" || len(value) > 131072 || json.Unmarshal([]byte(value), &envelope) != nil {
+		return envelope, fmt.Errorf("invalid encrypted envelope")
+	}
+	if envelope.V != 1 || envelope.Alg != "P256-HKDF-A256GCM" || len(envelope.Recipients) == 0 || len(envelope.Recipients) > 256 {
+		return envelope, fmt.Errorf("unsupported encrypted envelope")
+	}
+	for recipientID, box := range envelope.Recipients {
+		id, err := strconv.ParseInt(recipientID, 10, 64)
+		if err != nil || id <= 0 {
+			return envelope, fmt.Errorf("invalid recipient")
+		}
+		iv, ivErr := base64.StdEncoding.DecodeString(box.IV)
+		ciphertext, cipherErr := base64.StdEncoding.DecodeString(box.CT)
+		if ivErr != nil || cipherErr != nil || len(iv) != 12 || len(ciphertext) < 17 {
+			return envelope, fmt.Errorf("invalid AES-GCM box")
+		}
+	}
+	if envelope.AttachmentID != "" {
+		decoded, err := hex.DecodeString(envelope.AttachmentID)
+		if err != nil || len(decoded) != 16 {
+			return envelope, fmt.Errorf("invalid attachment id")
+		}
+	}
+	return envelope, nil
+}
+
 func (a *API) sendMessage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	var in struct {
@@ -539,24 +580,10 @@ func (a *API) sendMessage(c *gin.Context) {
 		return
 	}
 	in.Body = strings.TrimSpace(in.Body)
-	var envelope struct {
-		V            int    `json:"v"`
-		Alg          string `json:"alg"`
-		AttachmentID string `json:"attachment_id"`
-		Recipients   map[string]struct {
-			IV string `json:"iv"`
-			CT string `json:"ct"`
-		} `json:"recipients"`
-	}
-	if in.Body == "" || len(in.Body) > 131072 || json.Unmarshal([]byte(in.Body), &envelope) != nil || envelope.V != 1 || envelope.Alg != "P256-HKDF-A256GCM" || len(envelope.Recipients) == 0 {
+	envelope, envelopeErr := validateEncryptedEnvelope(in.Body)
+	if envelopeErr != nil {
 		fail(c, 400, "加密消息无效或过大")
 		return
-	}
-	for _, box := range envelope.Recipients {
-		if len(box.IV) < 16 || len(box.CT) < 24 {
-			fail(c, 400, "加密消息封装无效")
-			return
-		}
 	}
 	rows, err := a.store.DB.Query(`SELECT user_id FROM conversation_members WHERE conversation_id=?`, id)
 	if err != nil {
@@ -579,10 +606,6 @@ func (a *API) sendMessage(c *gin.Context) {
 		return
 	}
 	if envelope.AttachmentID != "" {
-		if len(envelope.AttachmentID) != 32 {
-			fail(c, 400, "加密图片编号无效")
-			return
-		}
 		var n int
 		if a.store.DB.QueryRow(`SELECT COUNT(*) FROM encrypted_attachments WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, envelope.AttachmentID, id, uid(c)).Scan(&n) != nil || n != 1 {
 			fail(c, 400, "加密图片不存在或已发送")
