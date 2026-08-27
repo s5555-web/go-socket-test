@@ -62,7 +62,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS friendships (user_low_id BIGINT NOT NULL, user_high_id BIGINT NOT NULL, requested_by BIGINT NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'pending', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY(user_low_id,user_high_id), INDEX(requested_by), INDEX(status)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS conversations (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL DEFAULT '', is_group BOOLEAN NOT NULL DEFAULT FALSE, created_by BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(created_by)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS conversation_members (conversation_id BIGINT NOT NULL, user_id BIGINT NOT NULL, last_read_message_id BIGINT NOT NULL DEFAULT 0, hidden BOOLEAN NOT NULL DEFAULT FALSE, joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(conversation_id,user_id), INDEX(user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS messages (id BIGINT PRIMARY KEY AUTO_INCREMENT, conversation_id BIGINT NOT NULL, sender_id BIGINT NOT NULL, body TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(conversation_id,id), INDEX(sender_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS messages (id BIGINT PRIMARY KEY AUTO_INCREMENT, conversation_id BIGINT NOT NULL, sender_id BIGINT NOT NULL, body MEDIUMTEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(conversation_id,id), INDEX(sender_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS encrypted_attachments (id CHAR(32) PRIMARY KEY, conversation_id BIGINT NOT NULL, uploader_id BIGINT NOT NULL, message_id BIGINT NULL, cipher_size BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(conversation_id), INDEX(uploader_id), INDEX(message_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, endpoint MEDIUMTEXT NOT NULL, p256dh VARCHAR(255) NOT NULL, auth VARCHAR(255) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX(user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
@@ -76,6 +76,9 @@ func (s *Store) migrate() error {
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN encrypted_private_key MEDIUMTEXT NULL AFTER public_key`)
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN about VARCHAR(160) NOT NULL DEFAULT '' AFTER display_name`)
 	_, _ = s.DB.Exec(`ALTER TABLE conversation_members ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE AFTER last_read_message_id`)
+	// Message bodies are opaque E2EE envelopes. MEDIUMTEXT avoids truncating padded
+	// ciphertext while the API continues to enforce a much smaller request limit.
+	_, _ = s.DB.Exec(`ALTER TABLE messages MODIFY COLUMN body MEDIUMTEXT NOT NULL`)
 	// Existing direct conversations are already trusted contacts; preserve them as friends.
 	_, _ = s.DB.Exec(`INSERT IGNORE INTO friendships(user_low_id,user_high_id,requested_by,status) SELECT cm1.user_id,cm2.user_id,x.created_by,'accepted' FROM conversations x JOIN conversation_members cm1 ON cm1.conversation_id=x.id JOIN conversation_members cm2 ON cm2.conversation_id=x.id AND cm1.user_id<cm2.user_id WHERE x.is_group=FALSE`)
 	return nil
