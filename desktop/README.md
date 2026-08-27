@@ -7,4 +7,4 @@ npm install
 npm run package:win
 ```
 
-产物位于 `dist/SignalWeb-win32-x64/`。
+产物位于 `dist/SignalWeb-win32-x64/`。发布压缩包为 `SignalWeb-Windows-x64-v1.1.0.zip`，解压后运行 `SignalWeb.exe`，无需安装。
