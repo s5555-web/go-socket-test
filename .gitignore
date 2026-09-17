@@ -1,3 +1,4 @@
 /sket
 /server/cmd/server/server
 *.exe
+web/crypto-build/node_modules/

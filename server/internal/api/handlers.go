@@ -90,7 +90,7 @@ func (a *API) login(c *gin.Context) {
 }
 func (a *API) me(c *gin.Context) {
 	var u store.User
-	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.IsAdmin, &u.CreatedAt)
+	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),COALESCE(pq_public_key,''),COALESCE(encrypted_pq_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.PQPublicKey, &u.PQKeyBackup, &u.IsAdmin, &u.CreatedAt)
 	if err != nil {
 		fail(c, 404, "用户不存在")
 		return
@@ -155,6 +155,39 @@ func (a *API) setPublicKey(c *gin.Context) {
 		return
 	}
 	c.Status(204)
+}
+
+func (a *API) setPostQuantumKey(c *gin.Context) {
+	var in struct {
+		PublicKey string `json:"public_key"`
+		KeyBackup string `json:"key_backup"`
+		Password  string `json:"password"`
+	}
+	if c.ShouldBindJSON(&in) != nil || len(in.PublicKey) != 1580 || len(in.KeyBackup) < 2000 || len(in.KeyBackup) > 20000 || len(in.Password) < 6 {
+		fail(c, 400, "后量子密钥格式错误")
+		return
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(in.PublicKey)
+	if err != nil || len(publicKey) != 1184 {
+		fail(c, 400, "ML-KEM-768 公钥格式错误")
+		return
+	}
+	var hash string
+	if a.store.DB.QueryRow(`SELECT password_hash FROM users WHERE id=?`, uid(c)).Scan(&hash) != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
+		fail(c, 401, "密码验证失败")
+		return
+	}
+	result, err := a.store.DB.Exec(`UPDATE users SET pq_public_key=?,encrypted_pq_private_key=? WHERE id=? AND (pq_public_key IS NULL OR pq_public_key='' OR pq_public_key=?)`, in.PublicKey, in.KeyBackup, uid(c), in.PublicKey)
+	if err != nil {
+		fail(c, 500, "保存后量子公钥失败")
+		return
+	}
+	updated, _ := result.RowsAffected()
+	if updated == 0 {
+		fail(c, 409, "账号已绑定另一把后量子密钥，拒绝覆盖")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 func (a *API) users(c *gin.Context) {
 	query := strings.TrimSpace(c.Query("q"))
@@ -618,7 +651,7 @@ func (a *API) conversationMembers(c *gin.Context) {
 		fail(c, 403, "无权访问")
 		return
 	}
-	rows, err := a.store.DB.Query(`SELECT u.id,u.display_name,COALESCE(u.public_key,'') FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? ORDER BY u.id`, id)
+	rows, err := a.store.DB.Query(`SELECT u.id,u.display_name,COALESCE(u.public_key,''),COALESCE(u.pq_public_key,'') FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? ORDER BY u.id`, id)
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -627,9 +660,9 @@ func (a *API) conversationMembers(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var memberID int64
-		var name, key string
-		_ = rows.Scan(&memberID, &name, &key)
-		out = append(out, gin.H{"id": memberID, "display_name": name, "public_key": key})
+		var name, key, pqKey string
+		_ = rows.Scan(&memberID, &name, &key, &pqKey)
+		out = append(out, gin.H{"id": memberID, "display_name": name, "public_key": key, "pq_public_key": pqKey})
 	}
 	c.JSON(200, out)
 }
@@ -720,8 +753,9 @@ func (a *API) deleteAttachment(c *gin.Context) {
 }
 
 type encryptedRecipientBox struct {
-	IV string `json:"iv"`
-	CT string `json:"ct"`
+	IV   string `json:"iv"`
+	CT   string `json:"ct"`
+	PQCT string `json:"pq_ct,omitempty"`
 }
 
 type encryptedEnvelope struct {
@@ -733,10 +767,12 @@ type encryptedEnvelope struct {
 
 func validateEncryptedEnvelope(value string) (encryptedEnvelope, error) {
 	var envelope encryptedEnvelope
-	if value == "" || len(value) > 131072 || json.Unmarshal([]byte(value), &envelope) != nil {
+	if value == "" || len(value) > 524288 || json.Unmarshal([]byte(value), &envelope) != nil {
 		return envelope, fmt.Errorf("invalid encrypted envelope")
 	}
-	if envelope.V != 1 || envelope.Alg != "P256-HKDF-A256GCM" || len(envelope.Recipients) == 0 || len(envelope.Recipients) > 256 {
+	legacy := envelope.V == 1 && envelope.Alg == "P256-HKDF-A256GCM"
+	hybrid := envelope.V == 2 && envelope.Alg == "P256-MLKEM768-HKDF-SHA256-A256GCM"
+	if (!legacy && !hybrid) || len(envelope.Recipients) == 0 || len(envelope.Recipients) > 256 {
 		return envelope, fmt.Errorf("unsupported encrypted envelope")
 	}
 	for recipientID, box := range envelope.Recipients {
@@ -748,6 +784,15 @@ func validateEncryptedEnvelope(value string) (encryptedEnvelope, error) {
 		ciphertext, cipherErr := base64.StdEncoding.DecodeString(box.CT)
 		if ivErr != nil || cipherErr != nil || len(iv) != 12 || len(ciphertext) < 17 {
 			return envelope, fmt.Errorf("invalid AES-GCM box")
+		}
+		if legacy && box.PQCT != "" {
+			return envelope, fmt.Errorf("unexpected post-quantum ciphertext")
+		}
+		if hybrid {
+			pqCiphertext, pqErr := base64.StdEncoding.DecodeString(box.PQCT)
+			if pqErr != nil || len(pqCiphertext) != 1088 {
+				return envelope, fmt.Errorf("invalid ML-KEM-768 ciphertext")
+			}
 		}
 	}
 	if envelope.AttachmentID != "" {

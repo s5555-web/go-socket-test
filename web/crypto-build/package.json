@@ -1,0 +1,15 @@
+{
+  "name": "signal-web-crypto-build",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/post-quantum.js --bundle --minify --format=iife --global-name=SignalPostQuantum --outfile=../client/assets/post-quantum.js"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "0.7.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
+  }
+}

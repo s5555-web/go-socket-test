@@ -60,6 +60,7 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/me", a.me)
 	u.PUT("/me/profile", a.updateProfile)
 	u.PUT("/me/key", a.setPublicKey)
+	u.PUT("/me/pq-key", a.setPostQuantumKey)
 	u.GET("/users", a.users)
 	u.GET("/friends", a.friends)
 	u.GET("/friend-requests", a.friendRequests)
