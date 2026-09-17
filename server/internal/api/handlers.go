@@ -902,7 +902,7 @@ func (a *API) sendPush(userIDs []int64, senderID int64, m store.Message) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resp, err := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{Endpoint: endpoint, Keys: webpush.Keys{P256dh: p256dh, Auth: authKey}}, &webpush.Options{Subscriber: a.push.Subject, VAPIDPublicKey: a.push.PublicKey, VAPIDPrivateKey: a.push.PrivateKey, TTL: 60})
+		resp, err := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{Endpoint: endpoint, Keys: webpush.Keys{P256dh: p256dh, Auth: authKey}}, &webpush.Options{Subscriber: a.push.Subject, VAPIDPublicKey: a.push.PublicKey, VAPIDPrivateKey: a.push.PrivateKey, Topic: fmt.Sprintf("conversation-%d", m.ConversationID), TTL: 86400, Urgency: webpush.UrgencyHigh})
 		cancel()
 		if resp != nil {
 			_ = resp.Body.Close()
