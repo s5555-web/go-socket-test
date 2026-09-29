@@ -1,7 +1,8 @@
 const {app,BrowserWindow,ipcMain,nativeImage,session,shell}=require('electron');
 const path=require('path');
+const{HistoryStore}=require('./history-store');
 const APP_URL='https://msg.trip-vn.com/';
-let mainWindow;
+let mainWindow,historyStore;
 
 app.setAppUserModelId('SignalWeb.Desktop');
 
@@ -26,6 +27,22 @@ ipcMain.on('signal-badge',(_event,{count,dataUrl})=>{
   mainWindow.setOverlayIcon(icon,`${count} 条未读消息`);
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(()=>{
+  historyStore=new HistoryStore(path.join(app.getPath('userData'),'encrypted-message-history.json'));
+  const handlers={
+    'history:put':input=>historyStore.put(input),
+    'history:page':input=>historyStore.page(input),
+    'history:summaries':input=>historyStore.summaries(input),
+    'history:mark-read':input=>historyStore.markRead(input),
+    'history:delete':input=>historyStore.delete(input),
+    'history:delete-if-sender':input=>historyStore.deleteIfSender(input),
+    'history:clear':input=>historyStore.clear(input)
+  };
+  for(const[channel,handler]of Object.entries(handlers))ipcMain.handle(channel,(event,input)=>{
+    if(!event.senderFrame.url.startsWith(APP_URL))throw new Error('untrusted history request');
+    return handler(input||{});
+  });
+  createWindow();
+});
 app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit()});
 app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});

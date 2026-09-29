@@ -1,2 +1,13 @@
 const{contextBridge,ipcRenderer}=require('electron');
-contextBridge.exposeInMainWorld('signalDesktop',{setBadge:(count,dataUrl)=>ipcRenderer.send('signal-badge',{count,dataUrl})});
+contextBridge.exposeInMainWorld('signalDesktop',{
+  setBadge:(count,dataUrl)=>ipcRenderer.send('signal-badge',{count,dataUrl}),
+  history:{
+    put:input=>ipcRenderer.invoke('history:put',input),
+    page:input=>ipcRenderer.invoke('history:page',input),
+    summaries:input=>ipcRenderer.invoke('history:summaries',input),
+    markRead:input=>ipcRenderer.invoke('history:mark-read',input),
+    delete:input=>ipcRenderer.invoke('history:delete',input),
+    deleteIfSender:input=>ipcRenderer.invoke('history:delete-if-sender',input),
+    clear:input=>ipcRenderer.invoke('history:clear',input)
+  }
+});

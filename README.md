@@ -91,6 +91,7 @@ chmod +x server/scripts/run-with-restart.sh
 
 - 客户端：`https://msg.trip-vn.com`
 - 管理后台：`https://msg.trip-vn.com:801`
+- Windows 客户端：`https://msg.trip-vn.com/downloads/SignalWeb-Windows-x64-v1.2.0.zip`
 - Android APK 使用 Trusted Web Activity，包名为 `com.tripvn.msg`。
 - iOS 16.4 及以上可通过主屏幕 Web App 接收标准 Web Push；iOS 安装配置位于 `mobile/ios/SignalWeb-iOS.mobileconfig`。
 - 服务端使用 VAPID Web Push。推送载荷只包含发送者、会话编号和“端到端加密消息”提示，不包含消息正文。

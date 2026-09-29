@@ -1,12 +1,13 @@
 {
   "name": "signal-web-desktop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Signal Web Windows desktop client",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
-    "package:win": "electron-packager . SignalWeb --platform=win32 --arch=x64 --out=dist --overwrite --asar --prune=true --ignore=\"^/(dist|node_modules|SignalWeb-Windows-.*\\.zip)$\""
+    "test": "node --test history-store.test.js",
+    "package:win": "electron-packager . SignalWeb --platform=win32 --arch=x64 --out=dist --overwrite --asar --prune=true --ignore=\"^/(dist|node_modules|history-store\\.test\\.js|SignalWeb-Windows-.*\\.zip)$\""
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
