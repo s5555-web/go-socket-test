@@ -72,6 +72,8 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.DELETE("/conversations/:id", a.deleteConversation)
 	u.PUT("/conversations/:id/state", a.updateConversationState)
 	u.GET("/conversations/:id/messages", a.messages)
+	u.GET("/messages/pending", a.pendingMessages)
+	u.POST("/messages/:message/ack", a.ackPendingMessage)
 	u.DELETE("/conversations/:id/messages", a.clearConversationMessages)
 	u.DELETE("/conversations/:id/messages/:message", a.deleteMessage)
 	u.GET("/conversations/:id/members", a.conversationMembers)

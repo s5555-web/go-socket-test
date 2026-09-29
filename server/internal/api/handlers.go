@@ -540,7 +540,13 @@ func (a *API) clearConversationMessages(c *gin.Context) {
 		}
 	}
 	_ = attachmentRows.Close()
-	if _, err = tx.Exec(`DELETE md FROM message_deletions md JOIN messages m ON m.id=md.message_id WHERE m.conversation_id=?`, id); err == nil {
+	if _, err = tx.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.conversation_id=?`, id); err == nil {
+		_, err = tx.Exec(`DELETE FROM pending_messages WHERE conversation_id=?`, id)
+	}
+	if err == nil {
+		_, err = tx.Exec(`DELETE md FROM message_deletions md JOIN messages m ON m.id=md.message_id WHERE m.conversation_id=?`, id)
+	}
+	if err == nil {
 		_, err = tx.Exec(`DELETE FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL`, id)
 	}
 	if err == nil {
@@ -575,6 +581,51 @@ func (a *API) messages(c *gin.Context) {
 	c.JSON(200, []store.Message{})
 }
 
+func (a *API) cleanupExpiredPendingMessages() {
+	_, _ = a.store.DB.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.expires_at<=NOW()`)
+	_, _ = a.store.DB.Exec(`DELETE FROM pending_messages WHERE expires_at<=NOW()`)
+}
+
+func (a *API) pendingMessages(c *gin.Context) {
+	a.cleanupExpiredPendingMessages()
+	rows, err := a.store.DB.Query(`SELECT pm.id,pm.conversation_id,pm.sender_id,u.display_name,pm.body,pm.created_at FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id JOIN users u ON u.id=pm.sender_id JOIN conversation_members cm ON cm.conversation_id=pm.conversation_id AND cm.user_id=pmr.user_id WHERE pmr.user_id=? AND pm.expires_at>NOW() ORDER BY pm.id LIMIT 100`, uid(c))
+	if err != nil {
+		fail(c, 500, "读取离线消息失败")
+		return
+	}
+	defer rows.Close()
+	out := []store.Message{}
+	for rows.Next() {
+		var message store.Message
+		if rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.SenderName, &message.Body, &message.CreatedAt) == nil {
+			out = append(out, message)
+		}
+	}
+	c.JSON(200, out)
+}
+
+func (a *API) ackPendingMessage(c *gin.Context) {
+	messageID, err := strconv.ParseInt(c.Param("message"), 10, 64)
+	if err != nil || messageID <= 0 {
+		fail(c, 400, "消息编号无效")
+		return
+	}
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		fail(c, 500, "确认消息失败")
+		return
+	}
+	if _, err = tx.Exec(`DELETE FROM pending_message_recipients WHERE message_id=? AND user_id=?`, messageID, uid(c)); err == nil {
+		_, err = tx.Exec(`DELETE FROM pending_messages WHERE id=? AND NOT EXISTS(SELECT 1 FROM pending_message_recipients WHERE message_id=?)`, messageID, messageID)
+	}
+	if err != nil || tx.Commit() != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "确认消息失败")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (a *API) deleteMessage(c *gin.Context) {
 	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	messageID, messageErr := strconv.ParseInt(c.Param("message"), 10, 64)
@@ -604,6 +655,19 @@ func (a *API) deleteMessage(c *gin.Context) {
 		}
 	}
 	_ = memberRows.Close()
+	tx, txErr := a.store.DB.Begin()
+	if txErr != nil {
+		fail(c, 500, "撤回消息失败")
+		return
+	}
+	if _, txErr = tx.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.id=? AND pm.conversation_id=? AND pm.sender_id=?`, messageID, conversationID, uid(c)); txErr == nil {
+		_, txErr = tx.Exec(`DELETE FROM pending_messages WHERE id=? AND conversation_id=? AND sender_id=?`, messageID, conversationID, uid(c))
+	}
+	if txErr != nil || tx.Commit() != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "撤回消息失败")
+		return
+	}
 	attachmentID := c.Query("attachment")
 	if attachmentID != "" {
 		if decoded, decodeErr := hex.DecodeString(attachmentID); decodeErr == nil && len(decoded) == 16 {
@@ -800,14 +864,16 @@ func (a *API) sendMessage(c *gin.Context) {
 	}
 	defer rows.Close()
 	expected := 0
-	ids := []int64{}
+	recipientIDs := []int64{}
 	pushIDs := []int64{}
 	for rows.Next() {
 		var memberID int64
 		var muted bool
 		_ = rows.Scan(&memberID, &muted)
-		ids = append(ids, memberID)
-		if !muted {
+		if memberID != uid(c) {
+			recipientIDs = append(recipientIDs, memberID)
+		}
+		if memberID != uid(c) && !muted {
 			pushIDs = append(pushIDs, memberID)
 		}
 		expected++
@@ -816,6 +882,7 @@ func (a *API) sendMessage(c *gin.Context) {
 			return
 		}
 	}
+	_ = rows.Close()
 	if len(envelope.Recipients) != expected {
 		fail(c, 400, "加密消息收件人不匹配")
 		return
@@ -828,23 +895,49 @@ func (a *API) sendMessage(c *gin.Context) {
 		}
 	}
 	mid := nextMessageID()
+	createdAt := time.Now()
+	a.cleanupExpiredPendingMessages()
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		fail(c, 500, "发送失败")
+		return
+	}
+	if len(recipientIDs) > 0 {
+		if _, err = tx.Exec(`INSERT INTO pending_messages(id,conversation_id,sender_id,body,created_at,expires_at) VALUES(?,?,?,?,?,?)`, mid, id, uid(c), in.Body, createdAt, createdAt.Add(30*24*time.Hour)); err == nil {
+			for _, recipientID := range recipientIDs {
+				if _, err = tx.Exec(`INSERT INTO pending_message_recipients(message_id,user_id) VALUES(?,?)`, mid, recipientID); err != nil {
+					break
+				}
+			}
+		}
+	}
 	if envelope.AttachmentID != "" {
-		result, updateErr := a.store.DB.Exec(`UPDATE encrypted_attachments SET message_id=? WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, mid, envelope.AttachmentID, id, uid(c))
+		result, updateErr := tx.Exec(`UPDATE encrypted_attachments SET message_id=? WHERE id=? AND conversation_id=? AND uploader_id=? AND message_id IS NULL`, mid, envelope.AttachmentID, id, uid(c))
 		var updated int64
 		if updateErr == nil {
 			updated, _ = result.RowsAffected()
 		}
 		if updateErr != nil || updated != 1 {
+			_ = tx.Rollback()
 			fail(c, 409, "加密图片发送冲突，请重试")
 			return
 		}
 	}
-	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET hidden=FALSE,archived=FALSE WHERE conversation_id=?`, id)
-	_, _ = a.store.DB.Exec(`UPDATE conversation_members SET manual_unread=FALSE WHERE conversation_id=? AND user_id=?`, id, uid(c))
+	if err == nil {
+		_, err = tx.Exec(`UPDATE conversation_members SET hidden=FALSE,archived=FALSE WHERE conversation_id=?`, id)
+	}
+	if err == nil {
+		_, err = tx.Exec(`UPDATE conversation_members SET manual_unread=FALSE WHERE conversation_id=? AND user_id=?`, id, uid(c))
+	}
+	if err != nil || tx.Commit() != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "发送失败")
+		return
+	}
 	var senderName string
 	_ = a.store.DB.QueryRow(`SELECT display_name FROM users WHERE id=?`, uid(c)).Scan(&senderName)
-	m := store.Message{ID: mid, ConversationID: id, SenderID: uid(c), SenderName: senderName, Body: in.Body, CreatedAt: time.Now()}
-	a.hub.SendTo(ids, gin.H{"type": "message", "data": m})
+	m := store.Message{ID: mid, ConversationID: id, SenderID: uid(c), SenderName: senderName, Body: in.Body, CreatedAt: createdAt}
+	a.hub.SendTo(recipientIDs, gin.H{"type": "message", "data": m})
 	go a.sendPush(pushIDs, uid(c), m)
 	c.JSON(201, m)
 }
@@ -970,6 +1063,10 @@ func (a *API) deleteUser(c *gin.Context) {
 		fail(c, 500, "删除失败")
 		return
 	}
+	_, _ = tx.Exec(`DELETE FROM pending_message_recipients WHERE user_id=?`, id)
+	_, _ = tx.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.sender_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM pending_messages WHERE sender_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM pending_messages WHERE NOT EXISTS(SELECT 1 FROM pending_message_recipients WHERE message_id=pending_messages.id)`)
 	_, _ = tx.Exec(`DELETE md FROM message_deletions md JOIN messages m ON m.id=md.message_id WHERE m.sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM message_deletions WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
