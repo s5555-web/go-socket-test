@@ -2,3 +2,9 @@
 /server/cmd/server/server
 *.exe
 web/crypto-build/node_modules/
+server/configs/config.yaml
+.env
+.env.*
+!.env.example
+*.pem
+*.key

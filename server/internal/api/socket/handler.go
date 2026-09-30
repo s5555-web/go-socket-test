@@ -2,6 +2,7 @@ package socket
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -12,7 +13,10 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(*http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin, err := url.Parse(r.Header.Get("Origin"))
+		return err == nil && origin.Host != "" && origin.Host == r.Host && (origin.Scheme == "https" || origin.Scheme == "http")
+	},
 }
 
 type Handler struct {
@@ -27,7 +31,7 @@ type Handler struct {
 }
 
 func (h *Handler) Upgrade(c *gin.Context) {
-	uid, authErr := h.Authorize(c.Query("token"))
+	uid, authErr := h.Authorize(c.Query("ticket"))
 	if authErr != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return

@@ -42,10 +42,10 @@ func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
 func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
-	// WebSocket authentication is supplied in the browser-compatible query string.
-	// Never copy that short-lived credential into the service access log.
+	// WebSocket authentication uses a single-use 30-second ticket. The long-lived
+	// bearer token is never copied into a URL or proxy access log.
 	e.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/ws"}}), gin.Recovery())
-	sock := &socket.Handler{Hub: a.hub, Authorize: func(t string) (int64, error) { c, err := a.auth.Parse(t); return c.UserID, err }}
+	sock := &socket.Handler{Hub: a.hub, Authorize: a.auth.ConsumeWebSocketTicket}
 	sock.Config.ReadBufferSize = cfg.Socket.ReadBufferSize
 	sock.Config.WriteBufferSize = cfg.Socket.WriteBufferSize
 	sock.Config.PongWaitSec = cfg.Socket.PongWaitSec
@@ -65,6 +65,7 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u := v.Group("")
 	u.Use(a.requireUser(false))
 	u.GET("/me", a.me)
+	u.POST("/ws-ticket", a.webSocketTicket)
 	u.PUT("/me/profile", a.updateProfile)
 	u.PUT("/me/key", a.setPublicKey)
 	u.PUT("/me/pq-key", a.setPostQuantumKey)

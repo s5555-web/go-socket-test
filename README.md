@@ -30,7 +30,14 @@ go mod tidy
 go run ./cmd/server
 ```
 
-客户端默认监听 `:802`，管理后台默认监听 `:801`。启动前请创建 `signal_web` 数据库并修改 `server/configs/config.yaml` 中的数据库 DSN 和认证密钥。
+服务默认仅监听本机 `127.0.0.1:1802`（客户端）和 `127.0.0.1:1801`（管理后台），由 Nginx 统一通过 HTTPS/WSS 反向代理。复制 `server/configs/config.example.yaml` 为未跟踪的 `server/configs/config.yaml`，并在服务器的受限环境文件中设置数据库 DSN 和认证密钥：
+
+```bash
+SIGNAL_DATABASE_DSN='应用专用数据库用户:强随机密码@tcp(127.0.0.1:3306)/signal_web?charset=utf8mb4&parseTime=true&loc=Local'
+SIGNAL_AUTH_SECRET='至少32字节的密码学随机值'
+```
+
+生产凭据、TLS 私钥、环境文件和真实服务器 IP 不得提交到 Git。服务也会拒绝空数据库 DSN、短于 32 字节或示例形式的认证密钥。
 
 首次管理员可先注册普通账号，再执行：
 
@@ -63,7 +70,8 @@ chmod +x server/scripts/run-with-restart.sh
 | POST | `/api/conversations/:id/messages` | 发送消息 |
 | POST | `/api/conversations/:id/attachments` | 上传设备端加密后的图片密文 |
 | GET | `/api/conversations/:id/attachments/:attachment` | 下载会话内图片密文 |
-| GET | `/ws?token=...` | 实时消息连接 |
+| POST | `/api/ws-ticket` | 使用登录态签发 30 秒、单次使用的实时连接凭证 |
+| GET | `/ws?ticket=...` | 使用单次凭证建立实时消息连接 |
 
 ## 本地消息历史
 
@@ -95,7 +103,8 @@ chmod +x server/scripts/run-with-restart.sh
 - 浏览器使用 WebCrypto 生成 P-256 ECDH 身份密钥，并使用 NIST FIPS 203 的 ML-KEM-768 生成后量子 KEM 身份密钥。
 - 当会话全部成员已完成升级时，新消息使用 P-256 ECDH 与 ML-KEM-768 的共享秘密共同经过 HKDF-SHA-256 派生 AES-256-GCM 密钥；任一算法仍安全时，消息内容仍保持机密。尚未全部升级的会话继续生成 v1 信封，历史 v1 消息保持可读。
 - 私钥保存在本机 IndexedDB；跨设备恢复副本以用户密码经 PBKDF2-SHA-256 派生的 AES-256-GCM 密钥加密后再存到服务端。服务端无法直接读取私钥。
-- 明文加入随机填充并按区间扩展，降低依据密文长度推测消息内容的风险。
+- 明文在加密前加入密码学随机填充，并扩展到固定的 512B、1KB、2KB、4KB 等长度桶，降低依据密文长度推测消息内容的风险。TLS/WSS 仍会暴露连接目标、时间和总流量，填充不能提供匿名性。
+- WebSocket 只接受同源连接，并使用 30 秒内有效、消费后立即失效的随机连接凭证；长期登录令牌不会进入 WebSocket URL 或代理日志。
 - 服务端严格校验 v1/v2 算法标识、AES-GCM 参数、ML-KEM-768 密文长度、成员覆盖和收件人匹配，拒绝明文或畸形信封。
 - 图片在设备端使用独立的随机 AES-256-GCM 密钥加密，服务端只保存密文；图片密钥、类型、名称和大小随消息封装分别端到端加密给每位成员。
 - 图片上传和下载均校验登录身份与会话成员关系，单图上限为 8MB；未绑定消息的上传可安全撤销。

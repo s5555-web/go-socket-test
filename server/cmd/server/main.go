@@ -79,7 +79,7 @@ func run() int {
 }
 
 func defaultConfigPath() string {
-	for _, path := range []string{"configs/config.yaml", "server/configs/config.yaml"} {
+	for _, path := range []string{"/etc/signal-web/config.yaml", "configs/config.yaml", "server/configs/config.yaml"} {
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}

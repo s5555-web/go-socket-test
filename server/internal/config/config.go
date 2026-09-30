@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -43,12 +44,30 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
 	v.SetConfigType("yaml")
+	v.SetEnvPrefix("SIGNAL")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	for _, key := range []string{
+		"server.client_addr", "server.admin_addr", "database.dsn", "auth.secret",
+		"socket.read_buffer_size", "socket.write_buffer_size", "socket.pong_wait_sec", "socket.ping_period_sec",
+		"push.subject", "push.public_key", "push.private_key",
+	} {
+		if err := v.BindEnv(key); err != nil {
+			return nil, fmt.Errorf("bind environment %s: %w", key, err)
+		}
+	}
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var c Config
 	if err := v.Unmarshal(&c); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+	if strings.TrimSpace(c.Database.DSN) == "" {
+		return nil, fmt.Errorf("database DSN is required; set SIGNAL_DATABASE_DSN on the server")
+	}
+	if len(c.Auth.Secret) < 32 || strings.Contains(strings.ToLower(c.Auth.Secret), "change-this") {
+		return nil, fmt.Errorf("auth secret must be at least 32 bytes and supplied through SIGNAL_AUTH_SECRET")
 	}
 	return &c, nil
 }

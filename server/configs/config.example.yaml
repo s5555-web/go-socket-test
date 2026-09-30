@@ -1,0 +1,22 @@
+server:
+  client_addr: "127.0.0.1:1802"
+  admin_addr: "127.0.0.1:1801"
+
+# Secrets must be supplied on the server through SIGNAL_DATABASE_DSN and
+# SIGNAL_AUTH_SECRET. Never commit production credentials to this file.
+database:
+  dsn: ""
+
+auth:
+  secret: ""
+
+socket:
+  read_buffer_size: 1024
+  write_buffer_size: 1024
+  pong_wait_sec: 60
+  ping_period_sec: 54
+
+push:
+  subject: "mailto:admin@example.invalid"
+  public_key: ""
+  private_key: ""

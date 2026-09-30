@@ -106,6 +106,15 @@ func (a *API) login(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"token": a.auth.Sign(id, admin), "is_admin": admin})
 }
+
+func (a *API) webSocketTicket(c *gin.Context) {
+	ticket, err := a.auth.IssueWebSocketTicket(uid(c))
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "无法建立安全连接")
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"ticket": ticket, "expires_in": 30})
+}
 func (a *API) me(c *gin.Context) {
 	var u store.User
 	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),COALESCE(pq_public_key,''),COALESCE(encrypted_pq_private_key,''),is_admin,is_support,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.PQPublicKey, &u.PQKeyBackup, &u.IsAdmin, &u.IsSupport, &u.CreatedAt)
