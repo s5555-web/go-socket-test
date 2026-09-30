@@ -21,6 +21,7 @@ type User struct {
 	PQPublicKey  string    `json:"pq_public_key,omitempty"`
 	PQKeyBackup  string    `json:"pq_key_backup,omitempty"`
 	IsAdmin      bool      `json:"is_admin"`
+	IsSupport    bool      `json:"is_support"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 type Conversation struct {
@@ -75,6 +76,10 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS pending_message_recipients (message_id BIGINT NOT NULL, user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(message_id,user_id), INDEX(user_id,message_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS encrypted_attachments (id CHAR(32) PRIMARY KEY, conversation_id BIGINT NOT NULL, uploader_id BIGINT NOT NULL, message_id BIGINT NULL, cipher_size BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(conversation_id), INDEX(uploader_id), INDEX(message_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, endpoint MEDIUMTEXT NOT NULL, p256dh VARCHAR(255) NOT NULL, auth VARCHAR(255) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX(user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS support_sites (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, site_key CHAR(32) NOT NULL UNIQUE, allowed_origin VARCHAR(255) NOT NULL DEFAULT '*', welcome_message VARCHAR(500) NOT NULL DEFAULT '您好，请问有什么可以帮您？', enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS support_visitors (id CHAR(32) PRIMARY KEY, site_id BIGINT NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE, display_name VARCHAR(80) NOT NULL DEFAULT '游客', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(site_id), INDEX(last_seen)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS support_threads (id BIGINT PRIMARY KEY AUTO_INCREMENT, site_id BIGINT NOT NULL, visitor_id CHAR(32) NOT NULL, assigned_user_id BIGINT NULL, status VARCHAR(16) NOT NULL DEFAULT 'open', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX(site_id,status,updated_at), INDEX(visitor_id), INDEX(assigned_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS support_messages (id BIGINT PRIMARY KEY AUTO_INCREMENT, thread_id BIGINT NOT NULL, sender_type VARCHAR(16) NOT NULL, sender_user_id BIGINT NULL, body TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(thread_id,id), INDEX(sender_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 	for _, q := range statements {
 		if _, err := s.DB.Exec(q); err != nil {
@@ -87,6 +92,7 @@ func (s *Store) migrate() error {
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN pq_public_key MEDIUMTEXT NULL AFTER encrypted_private_key`)
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN encrypted_pq_private_key MEDIUMTEXT NULL AFTER pq_public_key`)
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN about VARCHAR(160) NOT NULL DEFAULT '' AFTER display_name`)
+	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN is_support BOOLEAN NOT NULL DEFAULT FALSE AFTER is_admin`)
 	_, _ = s.DB.Exec(`ALTER TABLE conversation_members ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE AFTER last_read_message_id`)
 	_, _ = s.DB.Exec(`ALTER TABLE conversation_members ADD COLUMN manual_unread BOOLEAN NOT NULL DEFAULT FALSE AFTER last_read_message_id`)
 	_, _ = s.DB.Exec(`ALTER TABLE conversation_members ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE AFTER manual_unread`)

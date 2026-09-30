@@ -23,7 +23,7 @@
 #notifications.enabled { background: #e5f6ec; color: #178247; }
 #notifications.blocked { background: #f7e8e8; color: #aa3d3d; }
 #installApp { font-size: 18px; }
-.sideNav { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; flex: 0 0 auto; padding: 0 12px 9px; border-bottom: 1px solid #eceef3; }
+.sideNav { display: grid; grid-template-columns: repeat(auto-fit,minmax(0,1fr)); gap: 4px; flex: 0 0 auto; padding: 0 12px 9px; border-bottom: 1px solid #eceef3; }
 .sideNav button { position: relative; width: auto; padding: 9px; border-radius: 10px; background: transparent; color: #737783; }
 .sideNav button.active { background: #eaf1ff; color: #2c6bed; }
 .sideNav span { display: inline-grid; min-width: 18px; height: 18px; place-items: center; margin-left: 3px; padding: 0 5px; border-radius: 9px; background: #e53935; color: #fff; font-size: 10px; }

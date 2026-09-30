@@ -72,6 +72,23 @@ chmod +x server/scripts/run-with-restart.sh
 - 本地记录不会跨浏览器或设备自动同步。设备上线时会补收尚未确认的离线密文；清除浏览器网站数据也会删除该设备上的历史。
 - 加密图片文件仍由服务端保存，方便已收到消息的设备按权限下载；消息正文及其历史索引不在服务端持久化。
 
+## 网页客服插件
+
+客服插件是独立于原有私聊/群聊的业务通道：原有聊天仍使用端到端加密和设备本地历史；游客客服消息单独保存在服务端，以便游客刷新页面、客服换班或稍后上线后继续处理。
+
+1. 管理员登录 `https://msg.trip-vn.com:801`，在“用户与客服账号”中把现有账号设为客服。
+2. 在“客服插件站点”中新建站点并填写允许嵌入插件的完整来源，例如 `https://www.example.com`。
+3. 复制后台生成的脚本到目标网站页面。客服账号重新登录现有 Chat 后会看到“客服”入口。
+
+```html
+<script src="https://msg.trip-vn.com/assets/support-widget.js"
+        data-site-key="后台生成的站点密钥"
+        data-title="在线客服"
+        async></script>
+```
+
+可选参数 `data-position="left"` 可把悬浮按钮放到左下角；默认位于右下角。目标网站若配置了严格 CSP，需要在 `script-src` 和 `connect-src` 中允许 `https://msg.trip-vn.com`。
+
 ## 加密设计
 
 - 浏览器使用 WebCrypto 生成 P-256 ECDH 身份密钥，并使用 NIST FIPS 203 的 ML-KEM-768 生成后量子 KEM 身份密钥。

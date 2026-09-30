@@ -108,7 +108,7 @@ func (a *API) login(c *gin.Context) {
 }
 func (a *API) me(c *gin.Context) {
 	var u store.User
-	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),COALESCE(pq_public_key,''),COALESCE(encrypted_pq_private_key,''),is_admin,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.PQPublicKey, &u.PQKeyBackup, &u.IsAdmin, &u.CreatedAt)
+	err := a.store.DB.QueryRow(`SELECT id,username,display_name,COALESCE(about,''),avatar,COALESCE(public_key,''),COALESCE(encrypted_private_key,''),COALESCE(pq_public_key,''),COALESCE(encrypted_pq_private_key,''),is_admin,is_support,created_at FROM users WHERE id=?`, uid(c)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.PublicKey, &u.KeyBackup, &u.PQPublicKey, &u.PQKeyBackup, &u.IsAdmin, &u.IsSupport, &u.CreatedAt)
 	if err != nil {
 		fail(c, 404, "用户不存在")
 		return
@@ -1038,7 +1038,7 @@ func (a *API) adminStats(c *gin.Context) {
 	c.JSON(200, gin.H{"users": users, "conversations": convs, "messages": msgs})
 }
 func (a *API) adminUsers(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT id,username,display_name,COALESCE(about,''),avatar,is_admin,created_at FROM users ORDER BY id DESC LIMIT 200`)
+	rows, err := a.store.DB.Query(`SELECT id,username,display_name,COALESCE(about,''),avatar,is_admin,is_support,created_at FROM users ORDER BY id DESC LIMIT 200`)
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -1047,7 +1047,7 @@ func (a *API) adminUsers(c *gin.Context) {
 	out := []store.User{}
 	for rows.Next() {
 		var u store.User
-		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.CreatedAt)
+		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.IsSupport, &u.CreatedAt)
 		out = append(out, u)
 	}
 	c.JSON(200, out)
@@ -1072,6 +1072,8 @@ func (a *API) deleteUser(c *gin.Context) {
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM conversation_members WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM push_subscriptions WHERE user_id=?`, id)
+	_, _ = tx.Exec(`UPDATE support_threads SET assigned_user_id=NULL WHERE assigned_user_id=?`, id)
+	_, _ = tx.Exec(`UPDATE support_messages SET sender_user_id=NULL WHERE sender_user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM friendships WHERE user_low_id=? OR user_high_id=?`, id, id)
 	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, id)
 	if err != nil {
