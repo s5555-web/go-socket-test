@@ -38,7 +38,7 @@ func TestClientEngineRegistersSupportRoutes(t *testing.T) {
 	for _, route := range engine.Routes() {
 		found[route.Method+" "+route.Path] = true
 	}
-	for _, route := range []string{"GET /api/widget/config", "POST /api/widget/sessions", "GET /api/support/threads"} {
+	for _, route := range []string{"GET /api/widget/config", "POST /api/widget/sessions", "GET /api/support/threads", "GET /api/conversation-clears/pending", "POST /api/conversation-clears/:event/ack"} {
 		if !found[route] {
 			t.Fatalf("support route %q was not registered", route)
 		}

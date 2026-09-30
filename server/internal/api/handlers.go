@@ -526,6 +526,8 @@ func (a *API) clearConversationMessages(c *gin.Context) {
 		}
 	}
 	_ = memberRows.Close()
+	clearEventID := nextMessageID()
+	clearCreatedAt := time.Now()
 	attachmentRows, err := tx.Query(`SELECT id FROM encrypted_attachments WHERE conversation_id=? AND message_id IS NOT NULL FOR UPDATE`, id)
 	if err != nil {
 		rollback()
@@ -555,6 +557,16 @@ func (a *API) clearConversationMessages(c *gin.Context) {
 	if err == nil {
 		_, err = tx.Exec(`UPDATE conversation_members SET last_read_message_id=0,manual_unread=FALSE WHERE conversation_id=?`, id)
 	}
+	if err == nil {
+		for _, memberID := range members {
+			if memberID == uid(c) {
+				continue
+			}
+			if _, err = tx.Exec(`INSERT INTO pending_conversation_clears(conversation_id,user_id,event_id,actor_id,created_at) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE event_id=VALUES(event_id),actor_id=VALUES(actor_id),created_at=VALUES(created_at)`, id, memberID, clearEventID, uid(c), clearCreatedAt); err != nil {
+				break
+			}
+		}
+	}
 	if err != nil || tx.Commit() != nil {
 		rollback()
 		fail(c, 500, "清除失败")
@@ -563,7 +575,11 @@ func (a *API) clearConversationMessages(c *gin.Context) {
 	for _, attachmentID := range attachmentIDs {
 		_ = os.Remove(filepath.Join(a.attachmentDir, attachmentID+".bin"))
 	}
-	a.hub.SendTo(members, gin.H{"type": "conversation", "action": "cleared", "conversation_id": id, "actor_id": uid(c)})
+	for _, memberID := range members {
+		if memberID != uid(c) {
+			a.hub.SendTo([]int64{memberID}, gin.H{"type": "conversation", "action": "cleared", "event_id": clearEventID, "conversation_id": id, "actor_id": uid(c), "created_at": clearCreatedAt})
+		}
+	}
 	c.Status(http.StatusNoContent)
 }
 func (a *API) member(conversation, user int64) bool {
@@ -621,6 +637,44 @@ func (a *API) ackPendingMessage(c *gin.Context) {
 	if err != nil || tx.Commit() != nil {
 		_ = tx.Rollback()
 		fail(c, 500, "确认消息失败")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type pendingConversationClear struct {
+	EventID        int64     `json:"event_id"`
+	ConversationID int64     `json:"conversation_id"`
+	ActorID        int64     `json:"actor_id"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (a *API) pendingConversationClears(c *gin.Context) {
+	rows, err := a.store.DB.Query(`SELECT event_id,conversation_id,actor_id,created_at FROM pending_conversation_clears WHERE user_id=? ORDER BY created_at,event_id LIMIT 100`, uid(c))
+	if err != nil {
+		fail(c, 500, "读取离线清除事件失败")
+		return
+	}
+	defer rows.Close()
+	out := []pendingConversationClear{}
+	for rows.Next() {
+		var event pendingConversationClear
+		if rows.Scan(&event.EventID, &event.ConversationID, &event.ActorID, &event.CreatedAt) == nil {
+			out = append(out, event)
+		}
+	}
+	c.JSON(200, out)
+}
+
+func (a *API) ackPendingConversationClear(c *gin.Context) {
+	eventID, err := strconv.ParseInt(c.Param("event"), 10, 64)
+	if err != nil || eventID <= 0 {
+		fail(c, 400, "清除事件编号无效")
+		return
+	}
+	_, err = a.store.DB.Exec(`DELETE FROM pending_conversation_clears WHERE event_id=? AND user_id=?`, eventID, uid(c))
+	if err != nil {
+		fail(c, 500, "确认清除事件失败")
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -1064,6 +1118,7 @@ func (a *API) deleteUser(c *gin.Context) {
 		return
 	}
 	_, _ = tx.Exec(`DELETE FROM pending_message_recipients WHERE user_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM pending_conversation_clears WHERE user_id=? OR actor_id=?`, id, id)
 	_, _ = tx.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM pending_messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM pending_messages WHERE NOT EXISTS(SELECT 1 FROM pending_message_recipients WHERE message_id=pending_messages.id)`)

@@ -81,6 +81,8 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	u.GET("/conversations/:id/messages", a.messages)
 	u.GET("/messages/pending", a.pendingMessages)
 	u.POST("/messages/:message/ack", a.ackPendingMessage)
+	u.GET("/conversation-clears/pending", a.pendingConversationClears)
+	u.POST("/conversation-clears/:event/ack", a.ackPendingConversationClear)
 	u.DELETE("/conversations/:id/messages", a.clearConversationMessages)
 	u.DELETE("/conversations/:id/messages/:message", a.deleteMessage)
 	u.GET("/conversations/:id/members", a.conversationMembers)

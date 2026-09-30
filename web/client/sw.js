@@ -1,4 +1,4 @@
-const CACHE='signal-web-shell-v18';
+const CACHE='signal-web-shell-v19';
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(['/','/assets/app.css','/assets/layout.css','/assets/mobile.css','/assets/chat-extras.css','/assets/message-actions.css','/assets/friends.css','/assets/support-agent.css','/assets/post-quantum.js','/assets/crypto.js','/assets/support-agent.js','/assets/app.js','/assets/icon.svg']))));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;event.respondWith(fetch(event.request).catch(()=>caches.match(event.request)))});
