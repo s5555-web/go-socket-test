@@ -1,6 +1,27 @@
 package api
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
+
+func TestRandomVisitorName(t *testing.T) {
+	pattern := regexp.MustCompile(`^访客-[0-9A-F]{6}$`)
+	seen := map[string]bool{}
+	for i := 0; i < 20; i++ {
+		name, err := randomVisitorName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pattern.MatchString(name) {
+			t.Fatalf("unexpected visitor name %q", name)
+		}
+		if seen[name] {
+			t.Fatalf("duplicate visitor name %q", name)
+		}
+		seen[name] = true
+	}
+}
 
 func TestOriginAllowed(t *testing.T) {
 	tests := []struct {

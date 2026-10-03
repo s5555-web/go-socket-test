@@ -1108,10 +1108,25 @@ func (a *API) adminUsers(c *gin.Context) {
 	}
 	defer rows.Close()
 	out := []store.User{}
+	byID := map[int64]int{}
 	for rows.Next() {
 		var u store.User
 		_ = rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.About, &u.Avatar, &u.IsAdmin, &u.IsSupport, &u.CreatedAt)
+		u.SupportSiteIDs = []int64{}
 		out = append(out, u)
+		byID[u.ID] = len(out) - 1
+	}
+	assignments, assignErr := a.store.DB.Query(`SELECT user_id,site_id FROM support_user_sites ORDER BY site_id`)
+	if assignErr == nil {
+		defer assignments.Close()
+		for assignments.Next() {
+			var userID, siteID int64
+			if assignments.Scan(&userID, &siteID) == nil {
+				if index, exists := byID[userID]; exists {
+					out[index].SupportSiteIDs = append(out[index].SupportSiteIDs, siteID)
+				}
+			}
+		}
 	}
 	c.JSON(200, out)
 }
@@ -1136,6 +1151,7 @@ func (a *API) deleteUser(c *gin.Context) {
 	_, _ = tx.Exec(`DELETE FROM messages WHERE sender_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM conversation_members WHERE user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM push_subscriptions WHERE user_id=?`, id)
+	_, _ = tx.Exec(`DELETE FROM support_user_sites WHERE user_id=?`, id)
 	_, _ = tx.Exec(`UPDATE support_threads SET assigned_user_id=NULL WHERE assigned_user_id=?`, id)
 	_, _ = tx.Exec(`UPDATE support_messages SET sender_user_id=NULL WHERE sender_user_id=?`, id)
 	_, _ = tx.Exec(`DELETE FROM friendships WHERE user_low_id=? OR user_high_id=?`, id, id)

@@ -164,7 +164,7 @@ async function start(password = '') {
     me.value.pq_public_key = keys.pqPublicKey
     await Promise.all([loadChats(), loadFriends()])
     connect()
-    if (me.value.is_support) { await refreshSupport(); supportTimer = setInterval(refreshSupport, 8000) }
+		await applySupportRole(me.value.is_support)
     const launchID = Number(new URLSearchParams(location.search).get('conversation'))
     if (launchID && chats.value.some(item => item.id === launchID)) { history.replaceState(null, '', location.pathname); await openRoom(launchID) }
     if (keys.pqNeedsPassword) showFailToast('重新登录后将自动启用抗量子混合加密')
@@ -383,6 +383,21 @@ async function saveProfile() { await api('/me/profile', { method: 'PUT', body: J
 function logout() { localStorage.removeItem('token'); location.reload() }
 
 async function refreshSupport() { if (!me.value?.is_support) return; supportThreads.value = await api('/support/threads') }
+async function applySupportRole(enabled) {
+	if (!me.value) return
+	me.value.is_support = Boolean(enabled)
+	clearInterval(supportTimer)
+	supportTimer = null
+	if (me.value.is_support) {
+		await refreshSupport()
+		supportTimer = setInterval(() => refreshSupport().catch(console.warn), 8000)
+		return
+	}
+	supportThreads.value = []
+	supportMessages.value = []
+	supportActive.value = 0
+	if (activeView.value === 'support') activeView.value = 'chats'
+}
 async function openSupport(id) { activeId.value = 0; supportActive.value = id; supportMessages.value = await api(`/support/threads/${id}/messages`); await nextTick(); scrollBottom() }
 async function sendSupport() { const body = supportComposer.value.trim(); if (!body || !supportActive.value || supportBusy.value) return; supportBusy.value = true; try { const message = await api(`/support/threads/${supportActive.value}/messages`, { method: 'POST', body: JSON.stringify({ body }) }); supportMessages.value.push(message); supportComposer.value = ''; await refreshSupport() } finally { supportBusy.value = false } }
 async function toggleSupportStatus() { const thread = activeSupportThread.value; if (!thread) return; await api(`/support/threads/${thread.id}/status`, { method: 'PUT', body: JSON.stringify({ status: thread.status === 'open' ? 'closed' : 'open' }) }); await refreshSupport() }
@@ -413,6 +428,7 @@ async function handleSocketEvent(event) {
   if (event.type === 'message') { await addMessage(event.data); if (event.data.sender_id !== me.value.id) await ackMessage(event.data.id); await notifyIncoming(event.data); if (activeId.value === event.data.conversation_id && !document.hidden) api(`/conversations/${event.data.conversation_id}/read`, { method: 'POST' }).catch(() => {}); await loadChats() }
   else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
   else if (event.type === 'support_message') { await refreshSupport(); if (supportActive.value === Number(event.thread_id)) supportMessages.value.push(event.data) }
+	else if (event.type === 'support_role') { await applySupportRole(event.is_support); notify(event.is_support ? '客服权限已启用' : '客服权限已取消') }
   else if (event.type === 'conversation') {
     if (event.action === 'cleared') await applyClear(event)
     else if (event.action === 'message_deleted' && event.scope === 'all') { await historyStore.deleteIfSender(event.conversation_id, event.message_id, event.actor_id); entries.value = entries.value.filter(item => Number(item.message.id) !== Number(event.message_id)) }

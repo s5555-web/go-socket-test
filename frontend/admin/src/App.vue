@@ -89,8 +89,20 @@ async function copySnippet(site) {
 }
 
 async function setSupport(user) {
-  await api(`/users/${user.id}/support`, { method: 'PUT', body: JSON.stringify({ is_support: !user.is_support }) })
-  await refresh()
+	try {
+		const enabling = !user.is_support
+		if (enabling && !user.support_site_ids?.length) throw Error('请先选择该客服负责的插件站点')
+		await api(`/users/${user.id}/support`, { method: 'PUT', body: JSON.stringify({ is_support: enabling, site_ids: user.support_site_ids || [] }) })
+		await refresh()
+	} catch (cause) { error.value = cause.message }
+}
+
+async function saveSupportSites(user) {
+	try {
+		if (!user.support_site_ids?.length) throw Error('请至少选择一个插件站点')
+		await api(`/users/${user.id}/support`, { method: 'PUT', body: JSON.stringify({ is_support: true, site_ids: user.support_site_ids }) })
+		await refresh()
+	} catch (cause) { error.value = cause.message }
 }
 
 async function deleteUser(user) {
@@ -105,8 +117,9 @@ const userColumns = [
   { field: 'display_name', title: '昵称', minWidth: 130 },
   { field: 'about', title: '个人简介', minWidth: 190, showOverflow: true },
   { field: 'role', title: '角色', width: 130, slots: { default: 'role' } },
+	{ field: 'support_site_ids', title: '客服插件站点', minWidth: 260, slots: { default: 'supportSites' } },
   { field: 'created_at', title: '注册时间', width: 190, formatter: ({ cellValue }) => new Date(cellValue).toLocaleString() },
-  { title: '操作', width: 210, fixed: 'right', slots: { default: 'actions' } }
+	{ title: '操作', width: 250, fixed: 'right', slots: { default: 'actions' } }
 ]
 
 onMounted(() => { if (token.value) refresh() })
@@ -159,10 +172,11 @@ onMounted(() => { if (token.value) refresh() })
       </vxe-card>
 
       <vxe-card title="用户与客服账号" class="panel">
-        <p class="hint">启用客服后，该账号重新登录 Chat 即可处理网页访客咨询。</p>
-        <vxe-grid border stripe show-overflow :data="users" :columns="userColumns" :column-config="{ resizable: true }" :scroll-x="{ enabled: true }">
-          <template #role="{ row }"><vxe-space><vxe-tag v-if="row.is_admin" status="primary" content="管理员" /><vxe-tag :status="row.is_support ? 'success' : 'info'" :content="row.is_support ? '客服' : '普通用户'" /></vxe-space></template>
-          <template #actions="{ row }"><vxe-space><vxe-button size="mini" :status="row.is_support ? 'warning' : 'success'" :content="row.is_support ? '取消客服' : '设为客服'" @click="setSupport(row)" /><vxe-button v-if="!row.is_admin" size="mini" status="danger" content="删除" @click="deleteUser(row)" /></vxe-space></template>
+		<p class="hint">为客服选择负责的插件站点；权限变更会实时同步到已登录的 Chat 客户端。</p>
+		<vxe-grid border stripe show-overflow :data="users" :columns="userColumns" :column-config="{ resizable: true }" :scroll-x="{ enabled: true }">
+		  <template #role="{ row }"><vxe-space><vxe-tag v-if="row.is_admin" status="primary" content="管理员" /><vxe-tag :status="row.is_support ? 'success' : 'info'" :content="row.is_support ? '客服' : '普通用户'" /></vxe-space></template>
+		  <template #supportSites="{ row }"><vxe-select v-model="row.support_site_ids" multiple clearable placeholder="选择插件站点"><vxe-option v-for="site in sites" :key="site.id" :value="site.id" :label="site.name" :disabled="!site.enabled" /></vxe-select></template>
+		  <template #actions="{ row }"><vxe-space><vxe-button v-if="row.is_support" size="mini" status="primary" content="保存站点" @click="saveSupportSites(row)" /><vxe-button size="mini" :status="row.is_support ? 'warning' : 'success'" :content="row.is_support ? '取消客服' : '设为客服'" @click="setSupport(row)" /><vxe-button v-if="!row.is_admin" size="mini" status="danger" content="删除" @click="deleteUser(row)" /></vxe-space></template>
         </vxe-grid>
       </vxe-card>
     </main>

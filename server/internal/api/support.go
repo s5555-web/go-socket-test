@@ -61,6 +61,14 @@ func tokenHash(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+func randomVisitorName() (string, error) {
+	suffix, err := randomHex(3)
+	if err != nil {
+		return "", err
+	}
+	return "访客-" + strings.ToUpper(suffix), nil
+}
+
 func originAllowed(allowed, origin string) bool {
 	if origin == "" {
 		return true
@@ -127,7 +135,11 @@ func (a *API) createWidgetSession(c *gin.Context) {
 	}
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
 	if in.DisplayName == "" {
-		in.DisplayName = "游客"
+		in.DisplayName, err = randomVisitorName()
+		if err != nil {
+			fail(c, 500, "创建访客会话失败")
+			return
+		}
 	}
 	if len([]rune(in.DisplayName)) > 80 {
 		fail(c, 400, "访客名称不能超过80字")
@@ -185,7 +197,7 @@ func (a *API) visitorThread(c *gin.Context) (supportThread, error) {
 }
 
 func (a *API) readSupportMessages(threadID int64, after int64) ([]supportMessage, error) {
-	rows, err := a.store.DB.Query(`SELECT m.id,m.thread_id,m.sender_type,m.sender_user_id,COALESCE(u.display_name,IF(m.sender_type='visitor','游客','客服')),m.body,m.created_at FROM support_messages m LEFT JOIN users u ON u.id=m.sender_user_id WHERE m.thread_id=? AND m.id>? ORDER BY m.id LIMIT 200`, threadID, after)
+	rows, err := a.store.DB.Query(`SELECT m.id,m.thread_id,m.sender_type,m.sender_user_id,COALESCE(u.display_name,IF(m.sender_type='visitor',v.display_name,'客服')),m.body,m.created_at FROM support_messages m JOIN support_threads t ON t.id=m.thread_id JOIN support_visitors v ON v.id=t.visitor_id LEFT JOIN users u ON u.id=m.sender_user_id WHERE m.thread_id=? AND m.id>? ORDER BY m.id LIMIT 200`, threadID, after)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +274,7 @@ func (a *API) sendWidgetMessage(c *gin.Context) {
 	_, _ = a.store.DB.Exec(`UPDATE support_threads SET updated_at=NOW() WHERE id=?`, thread.ID)
 	messageID, _ := result.LastInsertId()
 	message := supportMessage{ID: messageID, ThreadID: thread.ID, SenderType: "visitor", SenderName: thread.VisitorName, Body: in.Body, CreatedAt: time.Now()}
-	rows, _ := a.store.DB.Query(`SELECT id FROM users WHERE is_support=TRUE`)
+	rows, _ := a.store.DB.Query(`SELECT u.id FROM users u JOIN support_user_sites x ON x.user_id=u.id WHERE u.is_support=TRUE AND x.site_id=?`, thread.SiteID)
 	agents := []int64{}
 	if rows != nil {
 		defer rows.Close()
@@ -289,7 +301,7 @@ func (a *API) requireSupport() gin.HandlerFunc {
 }
 
 func (a *API) supportThreads(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT t.id,t.site_id,s.name,t.visitor_id,v.display_name,t.assigned_user_id,COALESCE(u.display_name,''),t.status,COALESCE((SELECT body FROM support_messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1),''),t.created_at,t.updated_at FROM support_threads t JOIN support_sites s ON s.id=t.site_id JOIN support_visitors v ON v.id=t.visitor_id LEFT JOIN users u ON u.id=t.assigned_user_id ORDER BY (t.status='open') DESC,t.updated_at DESC LIMIT 200`)
+	rows, err := a.store.DB.Query(`SELECT t.id,t.site_id,s.name,t.visitor_id,v.display_name,t.assigned_user_id,COALESCE(u.display_name,''),t.status,COALESCE((SELECT body FROM support_messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1),''),t.created_at,t.updated_at FROM support_threads t JOIN support_sites s ON s.id=t.site_id JOIN support_user_sites x ON x.site_id=t.site_id AND x.user_id=? JOIN support_visitors v ON v.id=t.visitor_id LEFT JOIN users u ON u.id=t.assigned_user_id ORDER BY (t.status='open') DESC,t.updated_at DESC LIMIT 200`, uid(c))
 	if err != nil {
 		fail(c, 500, "读取客服会话失败")
 		return
@@ -309,14 +321,14 @@ func (a *API) supportThreads(c *gin.Context) {
 	c.JSON(200, out)
 }
 
-func (a *API) supportThreadAllowed(threadID int64) bool {
+func (a *API) supportThreadAllowed(userID, threadID int64) bool {
 	var count int
-	return a.store.DB.QueryRow(`SELECT COUNT(*) FROM support_threads WHERE id=?`, threadID).Scan(&count) == nil && count == 1
+	return a.store.DB.QueryRow(`SELECT COUNT(*) FROM support_threads t JOIN support_user_sites x ON x.site_id=t.site_id WHERE t.id=? AND x.user_id=?`, threadID, userID).Scan(&count) == nil && count == 1
 }
 
 func (a *API) supportThreadMessages(c *gin.Context) {
 	threadID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || !a.supportThreadAllowed(threadID) {
+	if err != nil || !a.supportThreadAllowed(uid(c), threadID) {
 		fail(c, 404, "客服会话不存在")
 		return
 	}
@@ -332,7 +344,7 @@ func (a *API) supportThreadMessages(c *gin.Context) {
 func (a *API) sendSupportMessage(c *gin.Context) {
 	threadID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	var status string
-	if err != nil || a.store.DB.QueryRow(`SELECT status FROM support_threads WHERE id=?`, threadID).Scan(&status) != nil {
+	if err != nil || !a.supportThreadAllowed(uid(c), threadID) || a.store.DB.QueryRow(`SELECT status FROM support_threads WHERE id=?`, threadID).Scan(&status) != nil {
 		fail(c, 404, "客服会话不存在")
 		return
 	}
@@ -382,6 +394,10 @@ func (a *API) updateSupportThreadStatus(c *gin.Context) {
 		fail(c, 400, "状态无效")
 		return
 	}
+	if !a.supportThreadAllowed(uid(c), threadID) {
+		fail(c, 404, "客服会话不存在")
+		return
+	}
 	result, err := a.store.DB.Exec(`UPDATE support_threads SET status=?,assigned_user_id=COALESCE(assigned_user_id,?),updated_at=NOW() WHERE id=?`, in.Status, uid(c), threadID)
 	if err != nil {
 		fail(c, 500, "更新失败")
@@ -398,14 +414,46 @@ func (a *API) updateSupportThreadStatus(c *gin.Context) {
 func (a *API) setSupportUser(c *gin.Context) {
 	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	var in struct {
-		IsSupport bool `json:"is_support"`
+		IsSupport bool    `json:"is_support"`
+		SiteIDs   []int64 `json:"site_ids"`
 	}
 	if err != nil || c.ShouldBindJSON(&in) != nil {
 		fail(c, 400, "参数错误")
 		return
 	}
-	result, err := a.store.DB.Exec(`UPDATE users SET is_support=? WHERE id=?`, in.IsSupport, userID)
+	uniqueSiteIDs := make([]int64, 0, len(in.SiteIDs))
+	seen := map[int64]bool{}
+	for _, siteID := range in.SiteIDs {
+		if siteID > 0 && !seen[siteID] {
+			seen[siteID] = true
+			uniqueSiteIDs = append(uniqueSiteIDs, siteID)
+		}
+	}
+	if in.IsSupport && len(uniqueSiteIDs) == 0 {
+		fail(c, 400, "请至少选择一个客服插件站点")
+		return
+	}
+	tx, err := a.store.DB.Begin()
 	if err != nil {
+		fail(c, 500, "更新客服权限失败")
+		return
+	}
+	if in.IsSupport {
+		var count int
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(uniqueSiteIDs)), ",")
+		args := make([]interface{}, len(uniqueSiteIDs))
+		for index, siteID := range uniqueSiteIDs {
+			args[index] = siteID
+		}
+		if tx.QueryRow(`SELECT COUNT(*) FROM support_sites WHERE id IN (`+placeholders+`)`, args...).Scan(&count) != nil || count != len(uniqueSiteIDs) {
+			_ = tx.Rollback()
+			fail(c, 400, "选择的客服插件站点无效")
+			return
+		}
+	}
+	result, err := tx.Exec(`UPDATE users SET is_support=? WHERE id=?`, in.IsSupport, userID)
+	if err != nil {
+		_ = tx.Rollback()
 		fail(c, 500, "更新客服权限失败")
 		return
 	}
@@ -414,10 +462,24 @@ func (a *API) setSupportUser(c *gin.Context) {
 		var count int
 		_ = a.store.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE id=?`, userID).Scan(&count)
 		if count == 0 {
+			_ = tx.Rollback()
 			fail(c, 404, "用户不存在")
 			return
 		}
 	}
+	if _, err = tx.Exec(`DELETE FROM support_user_sites WHERE user_id=?`, userID); err == nil && in.IsSupport {
+		for _, siteID := range uniqueSiteIDs {
+			if _, err = tx.Exec(`INSERT INTO support_user_sites(user_id,site_id) VALUES(?,?)`, userID, siteID); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil || tx.Commit() != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "更新客服站点失败")
+		return
+	}
+	a.hub.SendTo([]int64{userID}, gin.H{"type": "support_role", "is_support": in.IsSupport, "site_ids": uniqueSiteIDs})
 	c.Status(http.StatusNoContent)
 }
 

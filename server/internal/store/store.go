@@ -10,19 +10,20 @@ import (
 type Store struct{ DB *sql.DB }
 
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	About        string    `json:"about"`
-	Avatar       string    `json:"avatar"`
-	Relationship string    `json:"relationship,omitempty"`
-	PublicKey    string    `json:"public_key,omitempty"`
-	KeyBackup    string    `json:"key_backup,omitempty"`
-	PQPublicKey  string    `json:"pq_public_key,omitempty"`
-	PQKeyBackup  string    `json:"pq_key_backup,omitempty"`
-	IsAdmin      bool      `json:"is_admin"`
-	IsSupport    bool      `json:"is_support"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	Username       string    `json:"username"`
+	DisplayName    string    `json:"display_name"`
+	About          string    `json:"about"`
+	Avatar         string    `json:"avatar"`
+	Relationship   string    `json:"relationship,omitempty"`
+	PublicKey      string    `json:"public_key,omitempty"`
+	KeyBackup      string    `json:"key_backup,omitempty"`
+	PQPublicKey    string    `json:"pq_public_key,omitempty"`
+	PQKeyBackup    string    `json:"pq_key_backup,omitempty"`
+	IsAdmin        bool      `json:"is_admin"`
+	IsSupport      bool      `json:"is_support"`
+	SupportSiteIDs []int64   `json:"support_site_ids"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 type Conversation struct {
 	ID           int64      `json:"id"`
@@ -78,6 +79,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS encrypted_attachments (id CHAR(32) PRIMARY KEY, conversation_id BIGINT NOT NULL, uploader_id BIGINT NOT NULL, message_id BIGINT NULL, cipher_size BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(conversation_id), INDEX(uploader_id), INDEX(message_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, endpoint MEDIUMTEXT NOT NULL, p256dh VARCHAR(255) NOT NULL, auth VARCHAR(255) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX(user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS support_sites (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, site_key CHAR(32) NOT NULL UNIQUE, allowed_origin VARCHAR(255) NOT NULL DEFAULT '*', welcome_message VARCHAR(500) NOT NULL DEFAULT '您好，请问有什么可以帮您？', enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS support_user_sites (user_id BIGINT NOT NULL, site_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,site_id), INDEX(site_id,user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS support_visitors (id CHAR(32) PRIMARY KEY, site_id BIGINT NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE, display_name VARCHAR(80) NOT NULL DEFAULT '游客', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(site_id), INDEX(last_seen)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS support_threads (id BIGINT PRIMARY KEY AUTO_INCREMENT, site_id BIGINT NOT NULL, visitor_id CHAR(32) NOT NULL, assigned_user_id BIGINT NULL, status VARCHAR(16) NOT NULL DEFAULT 'open', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX(site_id,status,updated_at), INDEX(visitor_id), INDEX(assigned_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS support_messages (id BIGINT PRIMARY KEY AUTO_INCREMENT, thread_id BIGINT NOT NULL, sender_type VARCHAR(16) NOT NULL, sender_user_id BIGINT NULL, body TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX(thread_id,id), INDEX(sender_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -102,6 +104,10 @@ func (s *Store) migrate() error {
 	// Message bodies are opaque E2EE envelopes. MEDIUMTEXT avoids truncating padded
 	// ciphertext while the API continues to enforce a much smaller request limit.
 	_, _ = s.DB.Exec(`ALTER TABLE messages MODIFY COLUMN body MEDIUMTEXT NOT NULL`)
+	// Preserve the previous all-sites behavior for customer-service accounts that
+	// existed before per-site routing was introduced. Once an account has at least
+	// one explicit site assignment, future sites are not added automatically.
+	_, _ = s.DB.Exec(`INSERT IGNORE INTO support_user_sites(user_id,site_id) SELECT u.id,s.id FROM users u CROSS JOIN support_sites s WHERE u.is_support=TRUE AND NOT EXISTS (SELECT 1 FROM support_user_sites x WHERE x.user_id=u.id)`)
 	// Existing direct conversations are already trusted contacts; preserve them as friends.
 	_, _ = s.DB.Exec(`INSERT IGNORE INTO friendships(user_low_id,user_high_id,requested_by,status) SELECT cm1.user_id,cm2.user_id,x.created_by,'accepted' FROM conversations x JOIN conversation_members cm1 ON cm1.conversation_id=x.id JOIN conversation_members cm2 ON cm2.conversation_id=x.id AND cm1.user_id<cm2.user_id WHERE x.is_group=FALSE`)
 	return nil
