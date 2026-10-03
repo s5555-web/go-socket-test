@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +15,14 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		origin, err := url.Parse(r.Header.Get("Origin"))
+		value := strings.TrimSpace(r.Header.Get("Origin"))
+		// Native desktop WebSocket stacks may omit Origin. Authentication still
+		// requires a short-lived, single-use ticket obtained over HTTPS. Browsers
+		// always send Origin, so cross-site browser requests remain restricted.
+		if value == "" {
+			return true
+		}
+		origin, err := url.Parse(value)
 		return err == nil && origin.Host != "" && origin.Host == r.Host && (origin.Scheme == "https" || origin.Scheme == "http")
 	},
 }
