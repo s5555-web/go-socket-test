@@ -1,0 +1,524 @@
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { showConfirmDialog, showFailToast, showImagePreview, showSuccessToast, showToast } from 'vant'
+import { createLocalHistory } from './history.js'
+
+const token = ref(localStorage.token || '')
+const me = ref(null)
+const historyStore = createLocalHistory(() => me.value)
+const mode = ref('login')
+const authBusy = ref(false)
+const authError = ref('')
+const auth = reactive({ username: '', password: '', display_name: '', about: '' })
+const chats = ref([])
+const friends = ref([])
+const requests = ref([])
+const userResults = ref([])
+const members = ref([])
+const activeId = ref(0)
+const activeView = ref('chats')
+const search = ref('')
+const showArchived = ref(false)
+const entries = ref([])
+const historyCursor = ref('')
+const historyDone = ref(false)
+const historyLoading = ref(false)
+const connectionState = ref('connecting')
+const securityLabel = ref('🔒 端到端加密')
+const composer = ref('')
+const sending = ref(false)
+const replyDraft = ref(null)
+const imageDraft = ref(null)
+const imageDraftURL = ref('')
+const messagesBox = ref(null)
+const imageInput = ref(null)
+const showEmoji = ref(false)
+const emojiCategory = ref('最近')
+const showFriendSearch = ref(false)
+const friendQuery = ref('')
+const showProfile = ref(false)
+const profile = reactive({ display_name: '', about: '' })
+const showGroup = ref(false)
+const group = reactive({ name: '', member_ids: [] })
+const conversationMenu = ref(null)
+const messageMenu = ref(null)
+const showForward = ref(false)
+const forwardEntry = ref(null)
+const forwarding = ref(false)
+const installPrompt = ref(null)
+const pushEnabled = ref(false)
+const supportThreads = ref([])
+const supportActive = ref(0)
+const supportMessages = ref([])
+const supportComposer = ref('')
+const supportBusy = ref(false)
+let socket = null
+let reconnectTimer = null
+let reconnectAttempt = 0
+let socketEverConnected = false
+let socketEventChain = Promise.resolve()
+let supportTimer = null
+let friendSearchTimer = null
+const objectURLs = new Set()
+
+const loggedIn = computed(() => Boolean(me.value && token.value))
+const activeChat = computed(() => chats.value.find(item => item.id === activeId.value))
+const mobileRoomOpen = computed(() => Boolean(activeId.value || supportActive.value))
+const filteredFriends = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return friends.value.filter(item => !query || `${item.display_name} ${item.username} ${item.about || ''}`.toLowerCase().includes(query))
+})
+const filteredChats = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  const source = showArchived.value ? chats.value.filter(item => item.archived) : chats.value.filter(item => !item.archived)
+  return source.filter(item => !query || (item.name || '').toLowerCase().includes(query))
+})
+const archivedCount = computed(() => chats.value.filter(item => item.archived).length)
+const unreadCount = computed(() => chats.value.reduce((sum, item) => sum + (item.unread || 0), 0))
+const activeSupportThread = computed(() => supportThreads.value.find(item => item.id === supportActive.value))
+const emojiSets = reactive({
+  最近: [],
+  笑脸: '😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😋 😛 😜 🤪 🤨 🧐 🤓 😎 🥳 😏 😒 😞 😔 😟 😕 🙁 ☹️ 😣 😖 😫 😩 🥺 😢 😭 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 🤗 🤔 🤭 🤫 🤥 😶 😐 😑 😬 🙄 😯 😴 🤤 😪 😵 🤐 🤢 🤮 🤧 😷 🤒 🤕'.split(' '),
+  手势: '👋 🤚 🖐️ ✋ 🖖 👌 🤌 🤏 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 👐 🤲 🤝 🙏 ✍️ 💪 🫶'.split(' '),
+  爱心: '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💟 💯 ✨ ⭐ 🌟 💫 🔥 🎉 🎊'.split(' '),
+  物品: '🌹 🌸 🌺 🌻 🌞 🌙 ☀️ 🌈 ☁️ ⚡ ❄️ ☕ 🍵 🍺 🍻 🥂 🍷 🍹 🎂 🍰 🍎 🍉 🍓 🍒 🍜 🍕 🍔 🎁 🎈 ⚽ 🏀 🏆 🚗 ✈️ 🚀 ⌚ 📱 💻 📷 🎵 ✅ ❌ ❓ ❗'.split(' ')
+})
+try { emojiSets.最近 = JSON.parse(localStorage.signalRecentEmoji || '[]').slice(0, 24) } catch {}
+const currentEmoji = computed(() => emojiCategory.value === '最近' && !emojiSets.最近.length ? emojiSets.笑脸.slice(0, 24) : emojiSets[emojiCategory.value])
+
+function initials(value) { return (value || '?').slice(0, 2).toUpperCase() }
+function notify(message, type = 'success') { type === 'error' ? showFailToast(message) : showSuccessToast(message) }
+function messageSummary(payload, limit = 140) {
+  const text = (payload?.body || '').trim().replace(/\s+/g, ' ')
+  return text ? (text.length > limit ? `${text.slice(0, limit)}…` : text) : payload?.attachment ? '📷 图片' : '消息'
+}
+function dayKey(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` }
+function dayLabel(value) {
+  const date = new Date(value), now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate()), day = new Date(date.getFullYear(), date.getMonth(), date.getDate()), days = Math.round((today - day) / 86400000), week = date.toLocaleDateString('zh-CN', { weekday: 'short' })
+  if (days === 0) return '今天'
+  if (days === 1) return `昨天 · ${week}`
+  return date.getFullYear() === now.getFullYear() ? `${date.getMonth() + 1}月${date.getDate()}日 · ${week}` : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 · ${week}`
+}
+
+async function api(path, options = {}) {
+  options.headers = { ...(options.headers || {}), 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` }
+  const response = await fetch(`/api${path}`, options)
+  if (response.status === 204) return null
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw Error(data.error || '请求失败')
+  return data
+}
+
+async function submitAuth() {
+  authBusy.value = true
+  authError.value = ''
+  try {
+    const registering = mode.value === 'register'
+    const result = await api(registering ? '/register' : '/login', { method: 'POST', body: JSON.stringify(auth) })
+    token.value = result.token
+    localStorage.token = result.token
+    await start(auth.password)
+    notify(registering ? '注册成功' : '登录成功')
+  } catch (error) {
+    authError.value = error.message
+    showFailToast(error.message)
+  } finally { authBusy.value = false }
+}
+
+async function start(password = '') {
+  if (!window.isSecureContext || !crypto.subtle) throw Error('端到端加密要求使用 HTTPS 安全连接')
+  try {
+    me.value = await api('/me')
+    const E2EE = window.SignalE2EE
+    if (!E2EE) throw Error('加密模块加载失败')
+    const keys = await E2EE.init(me.value.username, me.value.public_key, me.value.key_backup, me.value.pq_public_key, me.value.pq_key_backup, password)
+    if (keys.created) await api('/me/key', { method: 'PUT', body: JSON.stringify({ public_key: keys.publicKey, key_backup: keys.keyBackup, password, replace: keys.replace }) })
+    if (keys.pqCreated) await api('/me/pq-key', { method: 'PUT', body: JSON.stringify({ public_key: keys.pqPublicKey, key_backup: keys.pqKeyBackup, password }) })
+    me.value.public_key = keys.publicKey
+    me.value.pq_public_key = keys.pqPublicKey
+    await Promise.all([loadChats(), loadFriends()])
+    connect()
+    if (me.value.is_support) { await refreshSupport(); supportTimer = setInterval(refreshSupport, 8000) }
+    const launchID = Number(new URLSearchParams(location.search).get('conversation'))
+    if (launchID && chats.value.some(item => item.id === launchID)) { history.replaceState(null, '', location.pathname); await openRoom(launchID) }
+    if (keys.pqNeedsPassword) showFailToast('重新登录后将自动启用抗量子混合加密')
+    if ('Notification' in window && Notification.permission === 'granted') syncPushSubscription().catch(() => {})
+  } catch (error) {
+    localStorage.removeItem('token')
+    token.value = ''
+    me.value = null
+    throw error
+  }
+}
+
+async function loadChats() {
+  const rows = await api('/conversations')
+  const summaries = await historyStore.summaries(rows.map(item => item.id))
+  for (const chat of rows) {
+    const local = summaries.get(chat.id)
+    if (local?.latest) { chat.last_message = local.latest.body; chat.last_at = local.latest.created_at }
+    chat.unread = Math.max(chat.manual_unread ? 1 : 0, local?.unread || 0)
+  }
+  chats.value = rows.sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.last_at || 0) - new Date(a.last_at || 0))
+  updateBadge()
+}
+
+async function loadFriends() { [friends.value, requests.value] = await Promise.all([api('/friends'), api('/friend-requests')]) }
+async function createDirect(id) { const result = await api('/conversations', { method: 'POST', body: JSON.stringify({ member_ids: [id] }) }); showFriendSearch.value = false; await loadChats(); await openRoom(result.id) }
+async function acceptFriend(id) { await api(`/friend-requests/${id}/accept`, { method: 'PUT' }); await loadFriends(); notify('已添加为好友') }
+async function removeFriend(user, pending = false) {
+  try { await showConfirmDialog({ title: pending ? '拒绝申请' : '删除好友', message: pending ? `拒绝 ${user.display_name} 的好友申请？` : `删除 ${user.display_name}？现有聊天记录不会删除。` }) } catch { return }
+  await api(`/friends/${user.id}`, { method: 'DELETE' }); await loadFriends(); notify(pending ? '已拒绝申请' : '好友已删除')
+}
+async function searchUsers() { const query = friendQuery.value.trim(); userResults.value = query ? await api(`/users?q=${encodeURIComponent(query)}`) : [] }
+async function relationshipAction(user) {
+  if (user.relationship === 'friend') return createDirect(user.id)
+  if (user.relationship === 'incoming') { showFriendSearch.value = false; activeView.value = 'friends'; return }
+  if (user.relationship === 'none') { await api('/friend-requests', { method: 'POST', body: JSON.stringify({ user_id: user.id }) }); notify('好友申请已发送') }
+  else await api(`/friends/${user.id}`, { method: 'DELETE' })
+  await searchUsers()
+}
+
+function revokeImages() { for (const url of objectURLs) URL.revokeObjectURL(url); objectURLs.clear() }
+async function decryptMessages(rawMessages) {
+  revokeImages()
+  const result = []
+  for (const message of rawMessages) {
+    const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
+    const entry = { message, payload, imageUrl: '', imageError: '' }
+    result.push(entry)
+    if (payload.attachment) loadEntryImage(entry)
+  }
+  entries.value = result
+}
+async function loadEntryImage(entry) {
+  try {
+    const metadata = entry.payload.attachment
+    const response = await fetch(`/api/conversations/${entry.message.conversation_id}/attachments/${metadata.id}`, { headers: { Authorization: `Bearer ${token.value}` } })
+    if (!response.ok) throw Error('图片下载失败')
+    const clear = await window.SignalE2EE.decryptAttachment(await response.arrayBuffer(), metadata)
+    if (metadata.size && clear.byteLength !== metadata.size) throw Error('图片完整性校验失败')
+    const url = URL.createObjectURL(new Blob([clear], { type: metadata.mime }))
+    objectURLs.add(url); entry.imageUrl = url
+  } catch (error) { entry.imageError = error.message }
+}
+
+async function openRoom(id) {
+  activeId.value = id
+  supportActive.value = 0
+  entries.value = []
+  members.value = await api(`/conversations/${id}/members`)
+  if (activeId.value !== id) return
+  const changed = await window.SignalE2EE.changedMemberKeys(members.value)
+  if (changed.length) {
+    try { await showConfirmDialog({ title: '安全密钥已改变', message: `${changed.map(item => item.display_name).join('、')} 的密钥发生变化，请通过其他渠道核对安全码。确认继续信任？` }) }
+    catch { activeId.value = 0; return }
+    await window.SignalE2EE.trustMemberKeys(changed)
+  }
+  const code = await window.SignalE2EE.fingerprint(members.value)
+  securityLabel.value = `${window.SignalE2EE.isPostQuantumReady(members.value) ? '🛡 混合后量子端到端加密' : '🔒 端到端加密'} · 安全码 ${code}`
+  await historyStore.markRead(id)
+  await api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
+  const page = await historyStore.page(id)
+  historyCursor.value = page[0]?.sort || ''
+  historyDone.value = page.length < historyStore.PAGE
+  await decryptMessages(page.map(item => item.message))
+  await loadChats()
+  await nextTick(); scrollBottom()
+}
+
+async function loadOlder() {
+  if (historyLoading.value || historyDone.value || !activeId.value) return
+  historyLoading.value = true
+  const oldHeight = messagesBox.value?.scrollHeight || 0
+  const page = await historyStore.page(activeId.value, historyCursor.value)
+  if (page.length) {
+    historyCursor.value = page[0].sort
+    const old = entries.value
+    const payloads = []
+    for (const item of page) {
+      const payload = await window.SignalE2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, members.value, item.message.sender_id)
+      payloads.push({ message: item.message, payload, imageUrl: '', imageError: '' })
+    }
+    entries.value = [...payloads, ...old]
+    for (const item of payloads) if (item.payload.attachment) loadEntryImage(item)
+    historyDone.value = page.length < historyStore.PAGE
+    await nextTick(); if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight - oldHeight
+  } else historyDone.value = true
+  historyLoading.value = false
+}
+function onMessageScroll() { if ((messagesBox.value?.scrollTop || 0) < 48) loadOlder().catch(error => showFailToast(error.message)) }
+function scrollBottom() { if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight }
+
+async function addMessage(message, persist = true) {
+  const active = activeId.value === message.conversation_id
+  if (persist) await historyStore.put(message, active && !document.hidden)
+  if (!active || entries.value.some(item => Number(item.message.id) === Number(message.id))) return
+  const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
+  const entry = { message, payload, imageUrl: '', imageError: '' }
+  entries.value.push(entry)
+  if (payload.attachment) loadEntryImage(entry)
+  await nextTick(); scrollBottom()
+}
+
+function chooseImage(file) {
+  const source = file?.file || file
+  if (!source) return
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(source.type)) return showFailToast('仅支持 JPG、PNG、WebP、GIF 图片')
+  if (source.size > 8 * 1024 * 1024) return showFailToast('图片不能超过 8MB')
+  clearImage(); imageDraft.value = source; imageDraftURL.value = URL.createObjectURL(source)
+}
+function clearImage() { if (imageDraftURL.value) URL.revokeObjectURL(imageDraftURL.value); imageDraft.value = null; imageDraftURL.value = '' }
+async function uploadAttachment(cipher, conversationID) {
+  const response = await fetch(`/api/conversations/${conversationID}/attachments`, { method: 'POST', headers: { Authorization: `Bearer ${token.value}`, 'Content-Type': 'application/octet-stream' }, body: cipher })
+  const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.error || '图片上传失败'); return data
+}
+async function sendMessage() {
+  const clear = composer.value.trim(), draft = imageDraft.value, conversationID = activeId.value
+  if ((!clear && !draft) || !conversationID || sending.value) return
+  sending.value = true
+  let uploadedID = ''
+  try {
+    let attachment = null
+    if (draft) {
+      showToast({ message: '正在加密图片…', forbidClick: true, duration: 0 })
+      const encrypted = await window.SignalE2EE.encryptAttachment(draft), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
+      uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
+    }
+    const body = await window.SignalE2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null)
+    const sent = await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
+    await addMessage(sent)
+    uploadedID = ''; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats(); showSuccessToast('已发送')
+  } catch (error) {
+    if (uploadedID) fetch(`/api/conversations/${conversationID}/attachments/${uploadedID}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } }).catch(() => {})
+    showFailToast(error.message)
+  } finally { sending.value = false }
+}
+function onComposerKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }
+function insertEmoji(value) { composer.value += value; emojiSets.最近 = [value, ...emojiSets.最近.filter(item => item !== value)].slice(0, 24); localStorage.signalRecentEmoji = JSON.stringify(emojiSets.最近) }
+
+function openMessageMenu(entry) { messageMenu.value = entry }
+async function copyMessage(entry) { await navigator.clipboard.writeText(entry.payload.body); notify('已复制') }
+function replyMessage(entry) { replyDraft.value = { message_id: Number(entry.message.id), sender_name: String(entry.message.sender_name || '联系人').slice(0, 80), body: messageSummary(entry.payload, 160), has_attachment: Boolean(entry.payload.attachment) } }
+async function deleteMessage(entry, all) {
+  try { await showConfirmDialog({ title: all ? '撤回消息' : '删除消息', message: all ? '在线设备将同步删除本地副本。' : '只从当前设备删除，其他成员仍可看到。' }) } catch { return }
+  if (all) { const query = new URLSearchParams({ scope: 'all' }); if (entry.payload.attachment?.id) query.set('attachment', entry.payload.attachment.id); await api(`/conversations/${entry.message.conversation_id}/messages/${entry.message.id}?${query}`, { method: 'DELETE' }) }
+  await historyStore.delete(entry.message); entries.value = entries.value.filter(item => item !== entry); await loadChats(); notify(all ? '消息已撤回' : '已从本机删除')
+}
+async function forwardMessage(conversationID) {
+  const entry = forwardEntry.value; if (!entry || forwarding.value) return
+  forwarding.value = true
+  let uploadedID = ''
+  try {
+    const targetMembers = await api(`/conversations/${conversationID}/members`)
+    let attachment = null
+    if (entry.payload.attachment) {
+      const response = await fetch(`/api/conversations/${entry.message.conversation_id}/attachments/${entry.payload.attachment.id}`, { headers: { Authorization: `Bearer ${token.value}` } })
+      if (!response.ok) throw Error('原图片已不存在')
+      const clear = await window.SignalE2EE.decryptAttachment(await response.arrayBuffer(), entry.payload.attachment)
+      const file = new File([clear], entry.payload.attachment.name || '转发图片', { type: entry.payload.attachment.mime })
+      const encrypted = await window.SignalE2EE.encryptAttachment(file), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
+      uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
+    }
+    const body = await window.SignalE2EE.encrypt(entry.payload.body || '', conversationID, targetMembers, attachment, null)
+    await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
+    uploadedID = ''; showForward.value = false; forwardEntry.value = null; notify('消息已转发')
+  } catch (error) { showFailToast(error.message) } finally { forwarding.value = false }
+}
+
+async function conversationAction(action, seconds = 0) {
+  const chat = conversationMenu.value; if (!chat) return
+  conversationMenu.value = null
+  if (action === 'clear') return clearConversation(chat.id)
+  if (action === 'delete') return deleteConversation(chat.id)
+  const body = { action }; if (action === 'mute') body.mute_seconds = seconds
+  await api(`/conversations/${chat.id}/state`, { method: 'PUT', body: JSON.stringify(body) }); await loadChats()
+}
+async function clearConversation(id) {
+  try { await showConfirmDialog({ title: '清除双方记录', message: '在线设备立即清除；离线设备下次连接服务器后自动清除。' }) } catch { return }
+  await api(`/conversations/${id}/messages`, { method: 'DELETE' }); await historyStore.clear(id); if (activeId.value === id) entries.value = []; await loadChats(); notify('清除指令已同步')
+}
+async function deleteConversation(id) {
+  try { await showConfirmDialog({ title: '删除对话', message: '确定从会话列表中删除？' }) } catch { return }
+  await api(`/conversations/${id}`, { method: 'DELETE' }); if (activeId.value === id) activeId.value = 0; await loadChats(); notify('对话已删除')
+}
+async function createGroup() { const result = await api('/conversations', { method: 'POST', body: JSON.stringify(group) }); showGroup.value = false; Object.assign(group, { name: '', member_ids: [] }); await loadChats(); await openRoom(result.id) }
+async function saveProfile() { await api('/me/profile', { method: 'PUT', body: JSON.stringify(profile) }); Object.assign(me.value, profile); showProfile.value = false; notify('个人资料已保存') }
+function logout() { localStorage.removeItem('token'); location.reload() }
+
+async function refreshSupport() { if (!me.value?.is_support) return; supportThreads.value = await api('/support/threads') }
+async function openSupport(id) { activeId.value = 0; supportActive.value = id; supportMessages.value = await api(`/support/threads/${id}/messages`); await nextTick(); scrollBottom() }
+async function sendSupport() { const body = supportComposer.value.trim(); if (!body || !supportActive.value || supportBusy.value) return; supportBusy.value = true; try { const message = await api(`/support/threads/${supportActive.value}/messages`, { method: 'POST', body: JSON.stringify({ body }) }); supportMessages.value.push(message); supportComposer.value = ''; await refreshSupport() } finally { supportBusy.value = false } }
+async function toggleSupportStatus() { const thread = activeSupportThread.value; if (!thread) return; await api(`/support/threads/${thread.id}/status`, { method: 'PUT', body: JSON.stringify({ status: thread.status === 'open' ? 'closed' : 'open' }) }); await refreshSupport() }
+
+async function ackMessage(id) { await api(`/messages/${id}/ack`, { method: 'POST' }) }
+async function applyClear(event) { await historyStore.clear(event.conversation_id); if (activeId.value === event.conversation_id) entries.value = []; if (event.event_id) await api(`/conversation-clears/${event.event_id}/ack`, { method: 'POST' }) }
+async function syncOffline() {
+  let cleared = 0
+  for (let page = 0; page < 20; page++) { const events = await api('/conversation-clears/pending'); if (!events.length) break; for (const event of events) { await applyClear(event); cleared++ } if (events.length < 100) break }
+  let received = 0
+  for (let page = 0; page < 20; page++) { const messages = await api('/messages/pending'); if (!messages.length) break; for (const message of messages) { await historyStore.put(message, activeId.value === message.conversation_id && !document.hidden); await ackMessage(message.id); received++ } if (messages.length < 100) break }
+  if (received || cleared) { await loadChats(); if (activeId.value) await openRoom(activeId.value); notify(received ? `已接收 ${received} 条离线消息` : `已同步 ${cleared} 个清除指令`) }
+}
+async function notifyIncoming(message) {
+  if (message.sender_id === me.value.id || (!document.hidden && activeId.value === message.conversation_id)) return
+  try {
+    const targetMembers = activeId.value === message.conversation_id ? members.value : await api(`/conversations/${message.conversation_id}/members`)
+    const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, targetMembers, message.sender_id)
+    const body = payload.body || (payload.attachment ? '📷 图片' : '新消息')
+    showToast(`${message.sender_name}：${body}`)
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const registration = await navigator.serviceWorker.ready
+      await registration.showNotification(message.sender_name, { body, tag: `conversation-${message.conversation_id}`, icon: '/assets/icon.svg', data: { url: `/?conversation=${message.conversation_id}`, conversation_id: message.conversation_id } })
+    }
+  } catch (error) { console.warn('notification failed', error) }
+}
+async function handleSocketEvent(event) {
+  if (event.type === 'message') { await addMessage(event.data); if (event.data.sender_id !== me.value.id) await ackMessage(event.data.id); await notifyIncoming(event.data); if (activeId.value === event.data.conversation_id && !document.hidden) api(`/conversations/${event.data.conversation_id}/read`, { method: 'POST' }).catch(() => {}); await loadChats() }
+  else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
+  else if (event.type === 'support_message') { await refreshSupport(); if (supportActive.value === Number(event.thread_id)) supportMessages.value.push(event.data) }
+  else if (event.type === 'conversation') {
+    if (event.action === 'cleared') await applyClear(event)
+    else if (event.action === 'message_deleted' && event.scope === 'all') { await historyStore.deleteIfSender(event.conversation_id, event.message_id, event.actor_id); entries.value = entries.value.filter(item => Number(item.message.id) !== Number(event.message_id)) }
+    await loadChats()
+  }
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); if (!token.value || !navigator.onLine) { connectionState.value = 'offline'; return } connectionState.value = 'reconnecting'; reconnectTimer = setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempt++, 5)) + Math.random() * 500) }
+async function connect() {
+  clearTimeout(reconnectTimer)
+  if (!token.value || !navigator.onLine) return scheduleReconnect()
+  if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return
+  connectionState.value = socketEverConnected ? 'reconnecting' : 'connecting'
+  try {
+    const issued = await api('/ws-ticket', { method: 'POST' }), scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+    const current = new WebSocket(`${scheme}://${location.host}/ws?ticket=${encodeURIComponent(issued.ticket)}`); socket = current
+    current.onopen = async () => { if (socket !== current) return; socketEverConnected = true; reconnectAttempt = 0; connectionState.value = 'connected'; await syncOffline() }
+    current.onmessage = message => { let data; try { data = JSON.parse(message.data) } catch { return } socketEventChain = socketEventChain.then(() => handleSocketEvent(data)).catch(console.warn) }
+    current.onerror = () => current.close()
+    current.onclose = () => { if (socket === current) { socket = null; scheduleReconnect() } }
+  } catch { scheduleReconnect() }
+}
+
+function updateBadge() {
+  const count = unreadCount.value
+  document.title = count ? `(${count}) Signal Web` : 'Signal Web'
+  if ('setAppBadge' in navigator) count ? navigator.setAppBadge(count).catch(() => {}) : navigator.clearAppBadge().catch(() => {})
+  if (!window.signalDesktop) return
+  if (!count) return window.signalDesktop.setBadge(0, '')
+  const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64
+  const context = canvas.getContext('2d'); context.fillStyle = '#e53935'; context.beginPath(); context.arc(32, 32, 30, 0, Math.PI * 2); context.fill(); context.fillStyle = '#fff'; context.font = 'bold 28px system-ui'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(count > 99 ? '99+' : String(count), 32, 33)
+  window.signalDesktop.setBadge(count, canvas.toDataURL())
+}
+function vapidBytes(value) { const padded = (value + '='.repeat((4 - value.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(padded), char => char.charCodeAt(0)) }
+async function syncPushSubscription() { const config = await api('/push/config'); if (!config.enabled) return false; const registration = await navigator.serviceWorker.ready; let subscription = await registration.pushManager.getSubscription(); if (!subscription) subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidBytes(config.public_key) }); await api('/push/subscriptions', { method: 'POST', body: JSON.stringify(subscription.toJSON()) }); pushEnabled.value = true; return true }
+async function enableNotifications() { if (!('Notification' in window) || !('serviceWorker' in navigator)) return showFailToast('当前环境不支持后台推送'); const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission(); if (permission !== 'granted') return showFailToast('未获得通知权限'); await syncPushSubscription(); notify('后台通知已开启') }
+async function installApp() { if (installPrompt.value) { await installPrompt.value.prompt(); installPrompt.value = null } else showToast(/iPhone|iPad/.test(navigator.userAgent) ? '请使用“分享 → 添加到主屏幕”' : '请使用浏览器菜单安装应用') }
+
+watch(friendQuery, () => { clearTimeout(friendSearchTimer); friendSearchTimer = setTimeout(() => searchUsers().catch(error => showFailToast(error.message)), 220) })
+watch(activeView, view => { if (view === 'support') refreshSupport() })
+watch(unreadCount, updateBadge)
+
+onMounted(() => {
+  window.addEventListener('online', connect)
+  window.addEventListener('offline', () => { connectionState.value = 'offline' })
+  window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt.value = event })
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) connect() })
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').then(registration => registration.update()).catch(() => {})
+    navigator.serviceWorker.addEventListener('message', event => { if (event.data?.type === 'open-conversation' && event.data.conversation_id) openRoom(Number(event.data.conversation_id)) })
+  }
+  if (token.value) start().catch(error => { authError.value = error.message })
+})
+onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer); socket?.close(); revokeImages(); clearImage() })
+</script>
+
+<template>
+  <div v-if="!loggedIn" class="auth-page">
+    <section class="auth-card">
+      <div class="brand-mark">S</div><h1>Signal Web</h1><p>安静、专注的即时通讯</p>
+      <van-form @submit="submitAuth">
+        <van-cell-group inset>
+          <van-field v-if="mode==='register'" v-model="auth.display_name" label="昵称" placeholder="请输入昵称" :rules="[{ required:true }]" />
+          <van-field v-if="mode==='register'" v-model="auth.about" label="简介" maxlength="160" placeholder="选填" />
+          <van-field v-model="auth.username" label="用户名" autocomplete="username" placeholder="请输入用户名" :rules="[{ required:true }]" />
+          <van-field v-model="auth.password" type="password" label="密码" autocomplete="current-password" placeholder="请输入密码" :rules="[{ required:true }]" />
+        </van-cell-group>
+        <div class="auth-actions"><van-button block round type="primary" native-type="submit" :loading="authBusy">{{ mode==='register'?'注册':'登录' }}</van-button><van-button block plain round type="primary" @click="mode=mode==='login'?'register':'login'">{{ mode==='login'?'没有账号？注册':'已有账号？登录' }}</van-button></div>
+      </van-form>
+      <p v-if="authError" class="error">{{ authError }}</p>
+      <div class="downloads"><a href="/downloads/SignalWeb-Windows-x64-v1.2.0.zip">Windows</a><a href="/downloads/SignalWeb-Android-v1.0.0.apk">Android</a><a href="/downloads/SignalWeb-iOS.mobileconfig">iPhone</a></div>
+    </section>
+  </div>
+
+  <main v-else class="chat-shell" :class="{ 'mobile-room-open': mobileRoomOpen }">
+    <aside class="sidebar">
+      <header class="account-header">
+        <button class="identity" @click="Object.assign(profile,{display_name:me.display_name,about:me.about||''});showProfile=true"><van-image round width="42" height="42"><template #error>{{ initials(me.display_name) }}</template></van-image><span><b>{{ me.display_name }}</b><small>@{{ me.username }}</small></span></button>
+        <div class="account-actions"><van-button icon="desktop-o" size="small" round @click="installApp"/><van-button :icon="pushEnabled?'bell':'bell-o'" size="small" round @click="enableNotifications"/><van-button icon="friends-o" size="small" round @click="showFriendSearch=true"/><van-button icon="revoke" size="small" round @click="logout"/></div>
+      </header>
+      <van-search v-model="search" :placeholder="activeView==='friends'?'搜索好友':'搜索会话'" :disabled="activeView==='support'" />
+      <van-tabs v-model:active="activeView" shrink>
+        <van-tab name="chats" title="消息" />
+        <van-tab name="friends"><template #title>好友 <van-badge v-if="requests.length" :content="requests.length" /></template></van-tab>
+        <van-tab v-if="me.is_support" name="support"><template #title>客服 <van-badge v-if="supportThreads.filter(x=>x.status==='open').length" :content="supportThreads.filter(x=>x.status==='open').length" /></template></van-tab>
+      </van-tabs>
+      <section v-if="activeView==='chats'" class="side-scroll">
+        <van-cell v-if="archivedCount||showArchived" is-link :title="showArchived?'返回消息':'已存档'" :value="showArchived?'':archivedCount" @click="showArchived=!showArchived" />
+        <van-swipe-cell v-for="chat in filteredChats" :key="chat.id">
+          <button class="chat-row" :class="{active:activeId===chat.id}" @click="openRoom(chat.id)" @contextmenu.prevent="conversationMenu=chat">
+            <span class="avatar">{{ initials(chat.name) }}</span><span class="chat-copy"><span><b>{{ chat.name||'对话' }}</b><van-badge v-if="chat.unread" :content="chat.unread" /></span><small>{{ chat.last_message?'🔒 端到端加密消息':'开始加密对话' }}</small></span><van-icon v-if="chat.pinned" name="star"/><van-icon v-if="chat.muted" name="volume-o"/>
+          </button>
+          <template #right><van-button square type="primary" text="操作" class="swipe-action" @click="conversationMenu=chat" /></template>
+        </van-swipe-cell>
+        <van-empty v-if="!filteredChats.length" :description="showArchived?'没有已存档会话':'没有会话'" />
+      </section>
+      <section v-else-if="activeView==='friends'" class="side-scroll">
+        <template v-if="requests.length"><h3>好友申请</h3><van-cell v-for="user in requests" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-space><van-button size="mini" type="primary" @click="acceptFriend(user.id)">接受</van-button><van-button size="mini" type="danger" plain @click="removeFriend(user,true)">拒绝</van-button></van-space></template></van-cell></template>
+        <h3>好友列表</h3><van-swipe-cell v-for="user in filteredFriends" :key="user.id"><van-cell is-link :title="user.display_name" :label="`@${user.username}${user.about?' · '+user.about:''}`" @click="createDirect(user.id)"/><template #right><van-button square type="danger" text="删除" class="swipe-action" @click="removeFriend(user)"/></template></van-swipe-cell><van-empty v-if="!filteredFriends.length" description="还没有好友" />
+      </section>
+      <section v-else class="side-scroll"><button v-for="thread in supportThreads" :key="thread.id" class="chat-row" :class="{active:supportActive===thread.id}" @click="openSupport(thread.id)"><span class="avatar">客</span><span class="chat-copy"><span><b>{{ thread.visitor_name||'游客' }}</b><van-tag :type="thread.status==='open'?'success':'default'">{{ thread.status==='open'?'进行中':'已结束' }}</van-tag></span><small>{{ thread.site_name }} · {{ thread.last_message||'等待游客消息' }}</small></span></button><van-empty v-if="!supportThreads.length" description="暂无游客咨询" /></section>
+      <van-button v-if="activeView==='chats'" class="floating-group" round icon="cluster-o" type="primary" @click="friends.length?showGroup=true:activeView='friends'">新建群聊</van-button>
+    </aside>
+
+    <section class="conversation-pane">
+      <div v-if="!activeId&&!supportActive" class="empty-state"><van-icon name="shield-o" size="64" color="#2c6bed"/><h2>选择一段对话</h2><p>消息内容与图片均在设备端完成端到端加密。</p></div>
+      <template v-else-if="activeId">
+        <van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0"><template #right><span class="connection" :class="connectionState">{{ connectionState==='connected'?'已连接':connectionState==='offline'?'已离线':'连接中' }}</span></template></van-nav-bar>
+        <div class="security-strip">{{ securityLabel }}</div>
+        <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
+          <button v-if="!historyDone" class="history-button" @click="loadOlder">{{ historyLoading?'正在读取…':'上滑加载更早消息' }}</button>
+          <template v-for="(entry,index) in entries" :key="entry.message.id">
+            <div v-if="index===0||dayKey(entries[index-1].message.created_at)!==dayKey(entry.message.created_at)" class="day-label">{{ dayLabel(entry.message.created_at) }}</div>
+            <article class="message" :class="{mine:entry.message.sender_id===me.id}" @contextmenu.prevent="openMessageMenu(entry)" @dblclick="openMessageMenu(entry)">
+              <small>{{ entry.message.sender_name }} · {{ new Date(entry.message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small>
+              <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
+              <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
+              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
+              <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
+              <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry)" />
+            </article>
+          </template>
+        </div>
+        <div class="composer-wrap">
+          <div v-if="replyDraft" class="draft"><span><b>引用 {{ replyDraft.sender_name }}</b>{{ replyDraft.body }}</span><van-icon name="cross" @click="replyDraft=null"/></div>
+          <div v-if="imageDraftURL" class="draft image-draft"><img :src="imageDraftURL"><span>{{ imageDraft.name }}</span><van-icon name="cross" @click="clearImage"/></div>
+          <div v-if="showEmoji" class="emoji-panel"><van-tabs v-model:active="emojiCategory" shrink><van-tab v-for="(_,name) in emojiSets" :key="name" :name="name" :title="name"/></van-tabs><div><button v-for="emoji in currentEmoji" :key="emoji" @click="insertEmoji(emoji)">{{ emoji }}</button></div></div>
+          <div class="composer"><van-button icon="smile-o" round @click="showEmoji=!showEmoji"/><van-button icon="photograph" round @click="imageInput.click()"/><textarea v-model="composer" rows="1" placeholder="发送消息" @keydown="onComposerKeydown"/><van-button icon="guide-o" round type="primary" :loading="sending" @click="sendMessage"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
+        </div>
+      </template>
+
+      <template v-else>
+        <van-nav-bar :title="activeSupportThread?.visitor_name||'游客咨询'" left-arrow @click-left="supportActive=0"><template #right><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></template></van-nav-bar>
+        <div class="messages"><article v-for="message in supportMessages" :key="message.id" class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }}</small><p>{{ message.body }}</p></article></div>
+        <div v-if="activeSupportThread?.status==='open'" class="composer-wrap"><div class="composer"><textarea v-model="supportComposer" maxlength="2000" placeholder="回复游客" @keydown.enter.exact.prevent="sendSupport"/><van-button icon="guide-o" round type="primary" :loading="supportBusy" @click="sendSupport"/></div></div>
+      </template>
+    </section>
+  </main>
+
+  <van-popup v-model:show="showFriendSearch" position="bottom" round class="sheet"><van-nav-bar title="添加好友" left-text="关闭" @click-left="showFriendSearch=false"/><van-search v-model="friendQuery" autofocus placeholder="搜索用户名或昵称"/><van-cell v-for="user in userResults" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-button size="small" type="primary" @click="relationshipAction(user)">{{ {none:'添加',outgoing:'取消申请',incoming:'去确认',friend:'发消息'}[user.relationship] }}</van-button></template></van-cell><van-empty v-if="friendQuery&&!userResults.length" description="没有找到用户"/></van-popup>
+  <van-popup v-model:show="showProfile" position="bottom" round class="sheet"><van-nav-bar title="个人资料" left-text="取消" right-text="保存" @click-left="showProfile=false" @click-right="saveProfile"/><van-cell-group inset><van-field :model-value="`@${me?.username||''}`" label="用户名" readonly/><van-field v-model="profile.display_name" label="昵称" maxlength="80"/><van-field v-model="profile.about" label="个人简介" maxlength="160" type="textarea" autosize/></van-cell-group></van-popup>
+  <van-popup v-model:show="showGroup" position="bottom" round class="sheet"><van-nav-bar title="新建群聊" left-text="取消" right-text="创建" @click-left="showGroup=false" @click-right="createGroup"/><van-cell-group inset><van-field v-model="group.name" label="群名称" placeholder="请输入群聊名称"/><van-checkbox-group v-model="group.member_ids"><van-cell v-for="user in friends" :key="user.id" :title="user.display_name" clickable @click="group.member_ids.includes(user.id)?group.member_ids.splice(group.member_ids.indexOf(user.id),1):group.member_ids.push(user.id)"><template #right-icon><van-checkbox :name="user.id"/></template></van-cell></van-checkbox-group></van-cell-group></van-popup>
+  <van-action-sheet :show="Boolean(conversationMenu)" title="会话操作" cancel-text="取消" @cancel="conversationMenu=null" @close="conversationMenu=null"><div class="action-grid"><van-button @click="conversationAction('mark_unread')">标记未读</van-button><van-button @click="conversationAction(conversationMenu?.pinned?'unpin':'pin')">{{ conversationMenu?.pinned?'取消置顶':'置顶' }}</van-button><van-button @click="conversationAction(conversationMenu?.archived?'unarchive':'archive')">{{ conversationMenu?.archived?'取消存档':'存档' }}</van-button><van-button @click="conversationAction(conversationMenu?.muted?'unmute':'mute',3600)">{{ conversationMenu?.muted?'取消静音':'静音 1 小时' }}</van-button><van-button type="warning" @click="conversationAction('clear')">清除双方记录</van-button><van-button type="danger" @click="conversationAction('delete')">删除对话</van-button></div></van-action-sheet>
+  <van-action-sheet :show="Boolean(messageMenu)" title="消息操作" cancel-text="取消" @cancel="messageMenu=null" @close="messageMenu=null"><div class="action-grid"><van-button @click="replyMessage(messageMenu);messageMenu=null">引用</van-button><van-button @click="forwardEntry=messageMenu;showForward=true;messageMenu=null">转发</van-button><van-button v-if="messageMenu?.payload.body" @click="copyMessage(messageMenu);messageMenu=null">复制文字</van-button><van-button type="warning" @click="deleteMessage(messageMenu,false);messageMenu=null">仅本机删除</van-button><van-button v-if="messageMenu?.message.sender_id===me?.id" type="danger" @click="deleteMessage(messageMenu,true);messageMenu=null">撤回双方</van-button></div></van-action-sheet>
+  <van-popup v-model:show="showForward" position="bottom" round class="sheet"><van-nav-bar title="转发到" left-text="取消" @click-left="showForward=false"/><van-cell v-for="chat in chats" :key="chat.id" is-link :title="chat.name" label="端到端加密转发" @click="forwardMessage(chat.id)"/></van-popup>
+</template>

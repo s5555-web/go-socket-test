@@ -13,8 +13,9 @@
 ```
 sket/
 ├── server/              # 完整 Go 后端（go.mod、cmd、internal、configs、scripts）
-├── web/client/          # Web C 端（独立源码）
-├── admin/               # Web 管理后台（独立源码）
+├── web/client/dist/     # Vue C 端生产构建产物
+├── admin/dist/          # Vue 管理后台生产构建产物
+├── frontend/            # Vue 3 + Vite 源码（C 端 Vant、管理端 VXE）
 ├── desktop/             # Windows 端（独立源码）
 ├── mobile/android/      # Android 端（独立源码）
 ├── mobile/ios/          # iOS 安装端（独立源码）
@@ -29,6 +30,18 @@ cd server
 go mod tidy
 go run ./cmd/server
 ```
+
+前端使用 Vue 3 单文件组件和 Vite。首次开发或依赖更新时执行：
+
+```bash
+cd frontend
+npm install
+npm run dev:client  # C 端，默认 5173
+npm run dev:admin   # 管理端，默认 5174
+npm run build       # 输出到 web/client/dist 与 admin/dist
+```
+
+C 端 UI 仅使用 Vant；管理后台 UI 与表格仅使用 VXE PC UI、VXE Table。
 
 服务默认仅监听本机 `127.0.0.1:1802`（客户端）和 `127.0.0.1:1801`（管理后台），由 Nginx 统一通过 HTTPS/WSS 反向代理。复制 `server/configs/config.example.yaml` 为未跟踪的 `server/configs/config.yaml`，并在服务器的受限环境文件中设置数据库 DSN 和认证密钥：
 
@@ -110,7 +123,7 @@ chmod +x server/scripts/run-with-restart.sh
 - 图片上传和下载均校验登录身份与会话成员关系，单图上限为 8MB；未绑定消息的上传可安全撤销。
 - 会话界面显示包含经典公钥和后量子公钥的安全码；首次使用固定联系人密钥，后续密钥改变时阻止静默继续并要求用户确认。
 
-生产环境必须使用 HTTPS/WSS，否则浏览器不会启用密钥模块。`web/crypto-build/` 固定并锁定浏览器密码组件版本，构建产物为 `web/client/assets/post-quantum.js`。
+生产环境必须使用 HTTPS/WSS，否则浏览器不会启用密钥模块。`web/crypto-build/` 固定并锁定浏览器密码组件版本，构建产物为 `frontend/client/public/assets/post-quantum.js`，再由 Vite 复制到 C 端生产目录。
 
 安全边界：当前 v2 能提高“现在收集、未来解密”攻击下的新消息机密性，但它不是 Signal Protocol、PQXDH、Double Ratchet 或 SPQR/Triple Ratchet 的实现，尚不具备逐消息前向保密和入侵后恢复能力，也未经独立密码学审计。浏览器 JavaScript 运行环境不能提供原生密钥隔离或严格常数时间保证。服务器仍可观察账号、会话成员、发送时间和密文大小等元数据；历史 v1 密文不会因为升级而自动获得后量子保护。
 

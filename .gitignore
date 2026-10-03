@@ -2,6 +2,7 @@
 /server/cmd/server/server
 *.exe
 web/crypto-build/node_modules/
+frontend/node_modules/
 server/configs/config.yaml
 .env
 .env.*

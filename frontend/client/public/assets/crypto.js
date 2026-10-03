@@ -102,3 +102,4 @@ const E2EE=(()=>{
   function isPostQuantumReady(members){return !!identity?.pq&&members.length>0&&members.every(member=>member.public_key&&member.pq_public_key)}
   return {init,encrypt,decrypt:decryptEnvelope,decryptPayload,encryptAttachment,decryptAttachment,fingerprint,changedMemberKeys,trustMemberKeys,isPostQuantumReady};
 })();
+window.SignalE2EE=E2EE;

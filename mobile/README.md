@@ -4,4 +4,4 @@
 - iOS: source and install profile live in `ios/`. `ios/SignalWeb-iOS.mobileconfig` installs the HTTPS web app on the Home Screen. On iOS 16.4 or newer, open the installed app and enable notifications to receive standards-based Web Push.
 - A native `.ipa` requires an Apple Developer Team, distribution certificate, provisioning profile, and APNs credentials. Those credentials must not be committed to Git.
 
-The Android source lives in `android/`; the release APK at this directory level is a deployment artifact. Its SHA-256 signing certificate fingerprint is published in `web/client/.well-known/assetlinks.json`; keep using the same private keystore for every upgrade.
+The Android source lives in `android/`; the release APK at this directory level is a deployment artifact. Its SHA-256 signing certificate fingerprint is published in `frontend/client/public/.well-known/assetlinks.json` and copied to `web/client/dist/.well-known/assetlinks.json` during the Vue build; keep using the same private keystore for every upgrade.

@@ -34,8 +34,8 @@ func firstExistingDir(paths ...string) string {
 func New(cfg *config.Config, db *store.Store, hub *socket.Hub) *API {
 	attachmentDir := filepath.Join("data", "attachments")
 	_ = os.MkdirAll(attachmentDir, 0700)
-	clientDir := firstExistingDir(filepath.Join("web", "client"), filepath.Join("..", "web", "client"))
-	adminDir := firstExistingDir("admin", filepath.Join("..", "admin"))
+	clientDir := firstExistingDir(filepath.Join("web", "client", "dist"), filepath.Join("..", "web", "client", "dist"), filepath.Join("web", "client"), filepath.Join("..", "web", "client"))
+	adminDir := firstExistingDir(filepath.Join("admin", "dist"), filepath.Join("..", "admin", "dist"), "admin", filepath.Join("..", "admin"))
 	return &API{store: db, auth: auth.New(cfg.Auth.Secret), hub: hub, push: cfg.Push, attachmentDir: attachmentDir, clientDir: clientDir, adminDir: adminDir}
 }
 
@@ -133,6 +133,7 @@ func (a *API) AdminEngine() *gin.Engine {
 	g.GET("/support-sites", a.adminSupportSites)
 	g.POST("/support-sites", a.createSupportSite)
 	g.PUT("/support-sites/:id", a.updateSupportSite)
+	e.Static("/assets", filepath.Join(a.adminDir, "assets"))
 	e.GET("/", func(c *gin.Context) { c.File(filepath.Join(a.adminDir, "index.html")) })
 	e.NoRoute(func(c *gin.Context) { c.File(filepath.Join(a.adminDir, "index.html")) })
 	return e
