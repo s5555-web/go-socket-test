@@ -186,6 +186,8 @@ button { color: inherit; }
   .conversation-pane { display: none; z-index: 8; }
   .signal-shell.mobile-room-open .list-pane { display: none; }
   .signal-shell.mobile-room-open .conversation-pane { display: flex; }
+  .signal-shell.mobile-room-open .app-rail { display: none; }
+  .signal-shell.mobile-room-open .conversation-pane { inset: 0; }
   .panel-title { padding-top: max(16px, env(safe-area-inset-top)); min-height: calc(70px + env(safe-area-inset-top)); }
   .settings-content-title { justify-content: flex-start; gap: 12px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; height: calc(64px + env(safe-area-inset-top)); }
   .settings-content-title .mobile-only { display: inline-flex; }
