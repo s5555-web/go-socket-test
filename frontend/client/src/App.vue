@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { showConfirmDialog, showFailToast, showImagePreview, showSuccessToast, showToast } from 'vant'
 import { createLocalHistory } from './history.js'
+import E2EE from './crypto/e2ee.js'
 
 const token = ref(localStorage.token || '')
 const me = ref(null)
@@ -129,8 +130,6 @@ async function start(password = '') {
   if (!window.isSecureContext || !crypto.subtle) throw Error('端到端加密要求使用 HTTPS 安全连接')
   try {
     me.value = await api('/me')
-    const E2EE = window.SignalE2EE
-    if (!E2EE) throw Error('加密模块加载失败')
     const keys = await E2EE.init(me.value.username, me.value.public_key, me.value.key_backup, me.value.pq_public_key, me.value.pq_key_backup, password)
     if (keys.created) await api('/me/key', { method: 'PUT', body: JSON.stringify({ public_key: keys.publicKey, key_backup: keys.keyBackup, password, replace: keys.replace }) })
     if (keys.pqCreated) await api('/me/pq-key', { method: 'PUT', body: JSON.stringify({ public_key: keys.pqPublicKey, key_backup: keys.pqKeyBackup, password }) })
@@ -184,7 +183,7 @@ async function decryptMessages(rawMessages) {
   revokeImages()
   const result = []
   for (const message of rawMessages) {
-    const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
+    const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
     const entry = { message, payload, imageUrl: '', imageError: '' }
     result.push(entry)
     if (payload.attachment) loadEntryImage(entry)
@@ -196,7 +195,7 @@ async function loadEntryImage(entry) {
     const metadata = entry.payload.attachment
     const response = await fetch(`/api/conversations/${entry.message.conversation_id}/attachments/${metadata.id}`, { headers: { Authorization: `Bearer ${token.value}` } })
     if (!response.ok) throw Error('图片下载失败')
-    const clear = await window.SignalE2EE.decryptAttachment(await response.arrayBuffer(), metadata)
+    const clear = await E2EE.decryptAttachment(await response.arrayBuffer(), metadata)
     if (metadata.size && clear.byteLength !== metadata.size) throw Error('图片完整性校验失败')
     const url = URL.createObjectURL(new Blob([clear], { type: metadata.mime }))
     objectURLs.add(url); entry.imageUrl = url
@@ -209,14 +208,14 @@ async function openRoom(id) {
   entries.value = []
   members.value = await api(`/conversations/${id}/members`)
   if (activeId.value !== id) return
-  const changed = await window.SignalE2EE.changedMemberKeys(members.value)
+  const changed = await E2EE.changedMemberKeys(members.value)
   if (changed.length) {
     try { await showConfirmDialog({ title: '安全密钥已改变', message: `${changed.map(item => item.display_name).join('、')} 的密钥发生变化，请通过其他渠道核对安全码。确认继续信任？` }) }
     catch { activeId.value = 0; return }
-    await window.SignalE2EE.trustMemberKeys(changed)
+    await E2EE.trustMemberKeys(changed)
   }
-  const code = await window.SignalE2EE.fingerprint(members.value)
-  securityLabel.value = `${window.SignalE2EE.isPostQuantumReady(members.value) ? '🛡 混合后量子端到端加密' : '🔒 端到端加密'} · 安全码 ${code}`
+  const code = await E2EE.fingerprint(members.value)
+  securityLabel.value = `${E2EE.isPostQuantumReady(members.value) ? '🛡 混合后量子端到端加密' : '🔒 端到端加密'} · 安全码 ${code}`
   await historyStore.markRead(id)
   await api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
   const page = await historyStore.page(id)
@@ -237,7 +236,7 @@ async function loadOlder() {
     const old = entries.value
     const payloads = []
     for (const item of page) {
-      const payload = await window.SignalE2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, members.value, item.message.sender_id)
+      const payload = await E2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, members.value, item.message.sender_id)
       payloads.push({ message: item.message, payload, imageUrl: '', imageError: '' })
     }
     entries.value = [...payloads, ...old]
@@ -254,7 +253,7 @@ async function addMessage(message, persist = true) {
   const active = activeId.value === message.conversation_id
   if (persist) await historyStore.put(message, active && !document.hidden)
   if (!active || entries.value.some(item => Number(item.message.id) === Number(message.id))) return
-  const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
+  const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
   const entry = { message, payload, imageUrl: '', imageError: '' }
   entries.value.push(entry)
   if (payload.attachment) loadEntryImage(entry)
@@ -282,10 +281,10 @@ async function sendMessage() {
     let attachment = null
     if (draft) {
       showToast({ message: '正在加密图片…', forbidClick: true, duration: 0 })
-      const encrypted = await window.SignalE2EE.encryptAttachment(draft), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
+      const encrypted = await E2EE.encryptAttachment(draft), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
       uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
     }
-    const body = await window.SignalE2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null)
+    const body = await E2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null)
     const sent = await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
     await addMessage(sent)
     uploadedID = ''; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats(); showSuccessToast('已发送')
@@ -315,12 +314,12 @@ async function forwardMessage(conversationID) {
     if (entry.payload.attachment) {
       const response = await fetch(`/api/conversations/${entry.message.conversation_id}/attachments/${entry.payload.attachment.id}`, { headers: { Authorization: `Bearer ${token.value}` } })
       if (!response.ok) throw Error('原图片已不存在')
-      const clear = await window.SignalE2EE.decryptAttachment(await response.arrayBuffer(), entry.payload.attachment)
+      const clear = await E2EE.decryptAttachment(await response.arrayBuffer(), entry.payload.attachment)
       const file = new File([clear], entry.payload.attachment.name || '转发图片', { type: entry.payload.attachment.mime })
-      const encrypted = await window.SignalE2EE.encryptAttachment(file), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
+      const encrypted = await E2EE.encryptAttachment(file), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
       uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
     }
-    const body = await window.SignalE2EE.encrypt(entry.payload.body || '', conversationID, targetMembers, attachment, null)
+    const body = await E2EE.encrypt(entry.payload.body || '', conversationID, targetMembers, attachment, null)
     await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
     uploadedID = ''; showForward.value = false; forwardEntry.value = null; notify('消息已转发')
   } catch (error) { showFailToast(error.message) } finally { forwarding.value = false }
@@ -364,7 +363,7 @@ async function notifyIncoming(message) {
   if (message.sender_id === me.value.id || (!document.hidden && activeId.value === message.conversation_id)) return
   try {
     const targetMembers = activeId.value === message.conversation_id ? members.value : await api(`/conversations/${message.conversation_id}/members`)
-    const payload = await window.SignalE2EE.decryptPayload(message.body, message.conversation_id, me.value.id, targetMembers, message.sender_id)
+    const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, targetMembers, message.sender_id)
     const body = payload.body || (payload.attachment ? '📷 图片' : '新消息')
     showToast(`${message.sender_name}：${body}`)
     if ('Notification' in window && Notification.permission === 'granted') {
