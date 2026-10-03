@@ -25,7 +25,6 @@ const historyCursor = ref('')
 const historyDone = ref(false)
 const historyLoading = ref(false)
 const connectionState = ref('connecting')
-const securityLabel = ref('安全码校验中…')
 const composer = ref('')
 const sending = ref(false)
 const replyDraft = ref(null)
@@ -210,12 +209,10 @@ async function openRoom(id) {
   if (activeId.value !== id) return
   const changed = await E2EE.changedMemberKeys(members.value)
   if (changed.length) {
-    try { await showConfirmDialog({ title: '安全密钥已改变', message: `${changed.map(item => item.display_name).join('、')} 的密钥发生变化，请通过其他渠道核对安全码。确认继续信任？` }) }
+    try { await showConfirmDialog({ title: '安全密钥已改变', message: `${changed.map(item => item.display_name).join('、')} 的密钥发生变化。确认继续信任此新密钥？` }) }
     catch { activeId.value = 0; return }
     await E2EE.trustMemberKeys(changed)
   }
-  const code = await E2EE.fingerprint(members.value)
-  securityLabel.value = `安全码 ${code}`
   await historyStore.markRead(id)
   await api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
   const page = await historyStore.page(id)
@@ -483,7 +480,6 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
       <div v-if="!activeId&&!supportActive" class="empty-state"><van-icon name="shield-o" size="64" color="#2c6bed"/><h2>选择一段对话</h2><p>消息内容与图片均在设备端完成端到端加密。</p></div>
       <template v-else-if="activeId">
         <van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0"><template #right><span class="connection" :class="connectionState">{{ connectionState==='connected'?'已连接':connectionState==='offline'?'已离线':'连接中' }}</span></template></van-nav-bar>
-        <div class="security-strip">{{ securityLabel }}</div>
         <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
           <button v-if="!historyDone" class="history-button" @click="loadOlder">{{ historyLoading?'正在读取…':'上滑加载更早消息' }}</button>
           <template v-for="(entry,index) in entries" :key="entry.message.id">
