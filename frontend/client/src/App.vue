@@ -34,6 +34,7 @@ const historyDone = ref(false)
 const historyLoading = ref(false)
 const connectionState = ref('connecting')
 const composer = ref('')
+const composerInput = ref(null)
 const sending = ref(false)
 const replyDraft = ref(null)
 const imageDraft = ref(null)
@@ -322,6 +323,14 @@ async function sendMessage() {
   } finally { sending.value = false }
 }
 function onComposerKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }
+function resizeComposer() {
+  nextTick(() => {
+    const element = composerInput.value
+    if (!element) return
+    element.style.height = '30px'
+    element.style.height = `${Math.max(30, element.scrollHeight)}px`
+  })
+}
 function insertEmoji(value) { composer.value += value; emojiSets.最近 = [value, ...emojiSets.最近.filter(item => item !== value)].slice(0, 24); localStorage.signalRecentEmoji = JSON.stringify(emojiSets.最近) }
 
 function openMessageMenu(entry) { messageMenu.value = entry }
@@ -444,6 +453,7 @@ async function installApp() { if (installPrompt.value) { await installPrompt.val
 watch(friendQuery, () => { clearTimeout(friendSearchTimer); friendSearchTimer = setTimeout(() => searchUsers().catch(error => showFailToast(error.message)), 220) })
 watch(activeView, view => { if (view === 'support') refreshSupport() })
 watch(unreadCount, updateBadge)
+watch(composer, resizeComposer)
 watch([theme, zoom], applyAppearance)
 watch(preferences, value => { localStorage.signalChatPreferences = JSON.stringify(value) }, { deep: true })
 
@@ -577,7 +587,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           <div v-if="replyDraft" class="draft"><span><b>引用 {{ replyDraft.sender_name }}</b>{{ replyDraft.body }}</span><van-icon name="cross" @click="replyDraft=null"/></div>
           <div v-if="imageDraftURL" class="draft image-draft"><img :src="imageDraftURL"><span>{{ imageDraft.name }}</span><van-icon name="cross" @click="clearImage"/></div>
           <div v-if="showEmoji" class="emoji-panel"><van-tabs v-model:active="emojiCategory" shrink><van-tab v-for="(_,name) in emojiSets" :key="name" :name="name" :title="name"/></van-tabs><div><button v-for="emoji in currentEmoji" :key="emoji" @click="insertEmoji(emoji)">{{ emoji }}</button></div></div>
-          <div class="composer"><van-button icon="smile-o" round @click="showEmoji=!showEmoji"/><van-button icon="photograph" round @click="imageInput.click()"/><textarea v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @keydown="onComposerKeydown"/><van-button icon="guide-o" round type="primary" :loading="sending" @click="sendMessage"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
+          <div class="composer"><van-button class="composer-tool" icon="smile-o" @click="showEmoji=!showEmoji"/><van-button class="composer-tool" icon="photograph" @click="imageInput.click()"/><textarea ref="composerInput" v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @input="resizeComposer" @keydown="onComposerKeydown"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
         </div>
       </template>
 
