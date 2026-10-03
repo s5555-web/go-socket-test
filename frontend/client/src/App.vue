@@ -41,6 +41,7 @@ const replyDraft = ref(null)
 const imageDraft = ref(null)
 const imageDraftURL = ref('')
 const messagesBox = ref(null)
+const supportMessagesBox = ref(null)
 const imageInput = ref(null)
 const showEmoji = ref(false)
 const emojiCategory = ref('最近')
@@ -62,6 +63,7 @@ const supportActive = ref(0)
 const supportMessages = ref([])
 const supportComposer = ref('')
 const supportBusy = ref(false)
+const supportUnread = ref({})
 let socket = null
 let reconnectTimer = null
 let reconnectAttempt = 0
@@ -90,6 +92,8 @@ const filteredChats = computed(() => {
 })
 const archivedCount = computed(() => chats.value.filter(item => item.archived).length)
 const unreadCount = computed(() => chats.value.reduce((sum, item) => sum + (item.unread || 0), 0))
+const supportUnreadCount = computed(() => Object.values(supportUnread.value).reduce((sum, count) => sum + Number(count || 0), 0))
+const totalUnreadCount = computed(() => unreadCount.value + supportUnreadCount.value)
 const activeSupportThread = computed(() => supportThreads.value.find(item => item.id === supportActive.value))
 const emojiSets = reactive({
   最近: [],
@@ -277,6 +281,7 @@ async function loadOlder() {
 }
 function onMessageScroll() { if ((messagesBox.value?.scrollTop || 0) < 48) loadOlder().catch(error => showFailToast(error.message)) }
 function scrollBottom() { if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight }
+function scrollSupportBottom() { if (supportMessagesBox.value) supportMessagesBox.value.scrollTop = supportMessagesBox.value.scrollHeight }
 
 async function addMessage(message, persist = true) {
   const active = activeId.value === message.conversation_id
@@ -405,12 +410,24 @@ async function applySupportRole(enabled) {
 	}
 	supportThreads.value = []
 	supportMessages.value = []
+	supportUnread.value = {}
 	supportActive.value = 0
 	if (activeView.value === 'support') activeView.value = 'chats'
 }
-async function openSupport(id) { activeId.value = 0; supportActive.value = id; supportMessages.value = await api(`/support/threads/${id}/messages`); await nextTick(); scrollBottom() }
-async function sendSupport() { const body = supportComposer.value.trim(); if (!body || !supportActive.value || supportBusy.value) return; supportBusy.value = true; try { const message = await api(`/support/threads/${supportActive.value}/messages`, { method: 'POST', body: JSON.stringify({ body }) }); supportMessages.value.push(message); supportComposer.value = ''; await refreshSupport() } finally { supportBusy.value = false } }
+async function openSupport(id) { activeId.value = 0; supportActive.value = id; supportUnread.value = { ...supportUnread.value, [id]: 0 }; supportMessages.value = await api(`/support/threads/${id}/messages`); await nextTick(); scrollSupportBottom() }
+async function sendSupport() { const body = supportComposer.value.trim(); if (!body || !supportActive.value || supportBusy.value) return; supportBusy.value = true; try { const message = await api(`/support/threads/${supportActive.value}/messages`, { method: 'POST', body: JSON.stringify({ body }) }); supportMessages.value.push(message); supportComposer.value = ''; await refreshSupport(); await nextTick(); scrollSupportBottom() } finally { supportBusy.value = false } }
 async function toggleSupportStatus() { const thread = activeSupportThread.value; if (!thread) return; await api(`/support/threads/${thread.id}/status`, { method: 'PUT', body: JSON.stringify({ status: thread.status === 'open' ? 'closed' : 'open' }) }); await refreshSupport() }
+
+async function notifySupportIncoming(thread, message) {
+	const name = thread?.visitor_name || message.sender_name || '访客'
+	const body = (message.body || '新消息').slice(0, 100)
+	showToast({ message: `${name}：${body}`, duration: 3500 })
+	if (!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return
+	try {
+		const registration = await navigator.serviceWorker.ready
+		await registration.showNotification(`客服咨询 · ${name}`, { body, tag: `support-${message.thread_id}`, icon: '/assets/icon.svg', data: { url: '/' } })
+	} catch (error) { console.warn('support notification failed', error) }
+}
 
 async function ackMessage(id) { await api(`/messages/${id}/ack`, { method: 'POST' }) }
 async function applyClear(event) { await historyStore.clear(event.conversation_id); if (activeId.value === event.conversation_id) entries.value = []; if (event.event_id) await api(`/conversation-clears/${event.event_id}/ack`, { method: 'POST' }) }
@@ -438,7 +455,16 @@ async function handleSocketEvent(event) {
 	if (event.type === 'socket_ready') { connectionState.value = 'connected'; connectionError.value = '' }
 	else if (event.type === 'message') { await addMessage(event.data); if (event.data.sender_id !== me.value.id) await ackMessage(event.data.id); await notifyIncoming(event.data); if (activeId.value === event.data.conversation_id && !document.hidden) api(`/conversations/${event.data.conversation_id}/read`, { method: 'POST' }).catch(() => {}); await loadChats() }
 	else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
-	else if (event.type === 'support_message') { await refreshSupport(); if (supportActive.value === Number(event.thread_id) && !supportMessages.value.some(item => Number(item.id) === Number(event.data.id))) supportMessages.value.push(event.data) }
+	else if (event.type === 'support_message') {
+		const threadID = Number(event.thread_id)
+		await refreshSupport()
+		const thread = supportThreads.value.find(item => Number(item.id) === threadID)
+		if (supportActive.value === threadID) {
+			if (!supportMessages.value.some(item => Number(item.id) === Number(event.data.id))) supportMessages.value.push(event.data)
+			await nextTick(); scrollSupportBottom()
+		} else supportUnread.value = { ...supportUnread.value, [threadID]: (supportUnread.value[threadID] || 0) + 1 }
+		await notifySupportIncoming(thread, event.data)
+	}
 	else if (event.type === 'support_role') { await applySupportRole(event.is_support); notify(event.is_support ? '客服权限已启用' : '客服权限已取消') }
   else if (event.type === 'conversation') {
     if (event.action === 'cleared') await applyClear(event)
@@ -492,7 +518,7 @@ async function connect() {
 }
 
 function updateBadge() {
-  const count = unreadCount.value
+	const count = totalUnreadCount.value
   document.title = count ? `(${count}) Signal Web` : 'Signal Web'
   if ('setAppBadge' in navigator) count ? navigator.setAppBadge(count).catch(() => {}) : navigator.clearAppBadge().catch(() => {})
   if (!window.signalDesktop) return
@@ -508,7 +534,7 @@ async function installApp() { if (installPrompt.value) { await installPrompt.val
 
 watch(friendQuery, () => { clearTimeout(friendSearchTimer); friendSearchTimer = setTimeout(() => searchUsers().catch(error => showFailToast(error.message)), 220) })
 watch(activeView, view => { if (view === 'support') refreshSupport() })
-watch(unreadCount, updateBadge)
+watch([unreadCount, supportUnreadCount], updateBadge)
 watch(composer, resizeComposer)
 watch([theme, zoom], applyAppearance)
 watch(preferences, value => { localStorage.signalChatPreferences = JSON.stringify(value) }, { deep: true })
@@ -553,7 +579,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
       <van-badge :content="unreadCount||undefined" :show-zero="false"><van-button :class="{active:activeView==='chats'||activeView==='new-chat'}" icon="chat-o" round @click="selectView('chats')" aria-label="聊天" /></van-badge>
       <van-badge :content="requests.length||undefined" :show-zero="false"><van-button :class="{active:activeView==='friends'}" icon="friends-o" round @click="selectView('friends')" aria-label="联系人" /></van-badge>
       <van-button icon="phone-o" round @click="showToast('当前版本暂未启用音视频通话')" aria-label="通话" />
-      <van-button v-if="me.is_support" :class="{active:activeView==='support'}" icon="service-o" round @click="selectView('support')" aria-label="客服" />
+	  <van-badge v-if="me.is_support" :content="supportUnreadCount||undefined" :show-zero="false"><van-button :class="{active:activeView==='support'}" icon="service-o" round @click="selectView('support')" aria-label="客服" /></van-badge>
       <van-button class="rail-settings" :class="{active:activeView==='settings'}" icon="setting-o" round @click="selectView('settings')" aria-label="设置" />
     </nav>
 
@@ -596,7 +622,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           <div v-if="!filteredChats.length" class="list-empty"><van-icon name="chat-o"/><p>{{ unreadOnly?'没有未读的聊天记录':showArchived?'没有已存档会话':'还没有聊天' }}</p><van-button v-if="unreadOnly" round @click="unreadOnly=false">清除筛选</van-button><van-button v-else round type="primary" @click="openNewChat">发起新聊天</van-button></div>
         </section>
         <section v-else-if="activeView==='friends'" class="side-scroll"><template v-if="requests.length"><h3>好友申请</h3><van-cell v-for="user in requests" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-space><van-button size="mini" type="primary" @click="acceptFriend(user.id)">接受</van-button><van-button size="mini" type="danger" plain @click="removeFriend(user,true)">拒绝</van-button></van-space></template></van-cell></template><h3>联系人</h3><van-swipe-cell v-for="user in filteredFriends" :key="user.id"><button class="contact-row" @click="createDirect(user.id)"><span class="avatar">{{ initials(user.display_name) }}</span><span><b>{{ user.display_name }}</b><small>@{{ user.username }}</small></span></button><template #right><van-button square type="danger" text="删除" class="swipe-action" @click="removeFriend(user)"/></template></van-swipe-cell><van-empty v-if="!filteredFriends.length" description="还没有联系人" /></section>
-        <section v-else class="side-scroll"><button v-for="thread in supportThreads" :key="thread.id" class="chat-row" :class="{active:supportActive===thread.id}" @click="openSupport(thread.id)"><span class="avatar">客</span><span class="chat-copy"><span><b>{{ thread.visitor_name||'游客' }}</b><van-tag :type="thread.status==='open'?'success':'default'">{{ thread.status==='open'?'进行中':'已结束' }}</van-tag></span><small>{{ thread.site_name }} · {{ thread.last_message||'等待游客消息' }}</small></span></button><van-empty v-if="!supportThreads.length" description="暂无游客咨询" /></section>
+		<section v-else class="side-scroll"><button v-for="thread in supportThreads" :key="thread.id" class="chat-row" :class="{active:supportActive===thread.id}" @click="openSupport(thread.id)"><span class="avatar">客</span><span class="chat-copy"><span><b>{{ thread.visitor_name||'游客' }}</b><van-tag :type="thread.status==='open'?'success':'default'">{{ thread.status==='open'?'进行中':'已结束' }}</van-tag><van-badge v-if="supportUnread[thread.id]" :content="supportUnread[thread.id]" /></span><small>{{ thread.site_name }} · {{ thread.last_message||'等待游客消息' }}</small></span></button><van-empty v-if="!supportThreads.length" description="暂无游客咨询" /></section>
       </template>
     </aside>
 
@@ -650,7 +676,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
 
       <template v-else>
         <van-nav-bar :title="activeSupportThread?.visitor_name||'游客咨询'" left-arrow @click-left="supportActive=0"><template #right><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></template></van-nav-bar>
-        <div class="messages"><article v-for="message in supportMessages" :key="message.id" class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }}</small><p>{{ message.body }}</p></article></div>
+		<div ref="supportMessagesBox" class="messages"><article v-for="message in supportMessages" :key="message.id" class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }}</small><p>{{ message.body }}</p></article></div>
         <div v-if="activeSupportThread?.status==='open'" class="composer-wrap"><div class="composer"><textarea v-model="supportComposer" maxlength="2000" placeholder="回复游客" @keydown.enter.exact.prevent="sendSupport"/><van-button icon="guide-o" round type="primary" :loading="supportBusy" @click="sendSupport"/></div></div>
       </template>
     </section>
