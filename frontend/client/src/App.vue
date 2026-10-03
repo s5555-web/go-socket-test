@@ -20,6 +20,14 @@ const activeId = ref(0)
 const activeView = ref('chats')
 const search = ref('')
 const showArchived = ref(false)
+const unreadOnly = ref(false)
+const settingsSection = ref('profile')
+const settingsMobileOpen = ref(false)
+const theme = ref(localStorage.signalTheme || 'dark')
+const zoom = ref(Number(localStorage.signalZoom || 100))
+let storedPreferences = {}
+try { storedPreferences = JSON.parse(localStorage.signalChatPreferences || '{}') } catch {}
+const preferences = reactive({ keepMutedArchived: false, spellcheck: true, emojiConvert: true, linkPreview: true, readReceipts: true, typingIndicators: true, ...storedPreferences })
 const entries = ref([])
 const historyCursor = ref('')
 const historyDone = ref(false)
@@ -63,15 +71,19 @@ const objectURLs = new Set()
 
 const loggedIn = computed(() => Boolean(me.value && token.value))
 const activeChat = computed(() => chats.value.find(item => item.id === activeId.value))
-const mobileRoomOpen = computed(() => Boolean(activeId.value || supportActive.value))
+const mobileRoomOpen = computed(() => Boolean(activeId.value || supportActive.value || settingsMobileOpen.value))
 const filteredFriends = computed(() => {
   const query = search.value.trim().toLowerCase()
   return friends.value.filter(item => !query || `${item.display_name} ${item.username} ${item.about || ''}`.toLowerCase().includes(query))
 })
+const newChatFriends = computed(() => {
+  const query = friendQuery.value.trim().toLowerCase()
+  return friends.value.filter(item => !query || `${item.display_name} ${item.username}`.toLowerCase().includes(query))
+})
 const filteredChats = computed(() => {
   const query = search.value.trim().toLowerCase()
   const source = showArchived.value ? chats.value.filter(item => item.archived) : chats.value.filter(item => !item.archived)
-  return source.filter(item => !query || (item.name || '').toLowerCase().includes(query))
+  return source.filter(item => (!unreadOnly.value || item.unread) && (!query || (item.name || '').toLowerCase().includes(query)))
 })
 const archivedCount = computed(() => chats.value.filter(item => item.archived).length)
 const unreadCount = computed(() => chats.value.reduce((sum, item) => sum + (item.unread || 0), 0))
@@ -87,6 +99,21 @@ try { emojiSets.最近 = JSON.parse(localStorage.signalRecentEmoji || '[]').slic
 const currentEmoji = computed(() => emojiCategory.value === '最近' && !emojiSets.最近.length ? emojiSets.笑脸.slice(0, 24) : emojiSets[emojiCategory.value])
 
 function initials(value) { return (value || '?').slice(0, 2).toUpperCase() }
+function selectView(view) {
+  activeView.value = view
+  settingsMobileOpen.value = false
+  if (view !== 'chats') activeId.value = 0
+  if (view !== 'support') supportActive.value = 0
+  if (view === 'settings') Object.assign(profile, { display_name: me.value.display_name, about: me.value.about || '' })
+}
+function openSetting(section) { settingsSection.value = section; settingsMobileOpen.value = true }
+function openNewChat() { selectView('new-chat'); friendQuery.value = ''; userResults.value = [] }
+function applyAppearance() {
+  document.documentElement.dataset.theme = theme.value
+  document.documentElement.style.setProperty('--ui-scale', String(zoom.value / 100))
+  localStorage.signalTheme = theme.value
+  localStorage.signalZoom = String(zoom.value)
+}
 function notify(message, type = 'success') { type === 'error' ? showFailToast(message) : showSuccessToast(message) }
 function messageSummary(payload, limit = 140) {
   const text = (payload?.body || '').trim().replace(/\s+/g, ' ')
@@ -202,6 +229,8 @@ async function loadEntryImage(entry) {
 }
 
 async function openRoom(id) {
+  activeView.value = 'chats'
+  settingsMobileOpen.value = false
   activeId.value = id
   supportActive.value = 0
   entries.value = []
@@ -270,7 +299,9 @@ async function uploadAttachment(cipher, conversationID) {
   const data = await response.json().catch(() => ({})); if (!response.ok) throw Error(data.error || '图片上传失败'); return data
 }
 async function sendMessage() {
-  const clear = composer.value.trim(), draft = imageDraft.value, conversationID = activeId.value
+  let clear = composer.value.trim()
+  if (preferences.emojiConvert) clear = clear.replace(/(^|\s):-?\)(?=\s|$)/g, '$1🙂').replace(/(^|\s):-?\((?=\s|$)/g, '$1🙁')
+  const draft = imageDraft.value, conversationID = activeId.value
   if ((!clear && !draft) || !conversationID || sending.value) return
   sending.value = true
   let uploadedID = ''
@@ -413,8 +444,11 @@ async function installApp() { if (installPrompt.value) { await installPrompt.val
 watch(friendQuery, () => { clearTimeout(friendSearchTimer); friendSearchTimer = setTimeout(() => searchUsers().catch(error => showFailToast(error.message)), 220) })
 watch(activeView, view => { if (view === 'support') refreshSupport() })
 watch(unreadCount, updateBadge)
+watch([theme, zoom], applyAppearance)
+watch(preferences, value => { localStorage.signalChatPreferences = JSON.stringify(value) }, { deep: true })
 
 onMounted(() => {
+  applyAppearance()
   window.addEventListener('online', connect)
   window.addEventListener('offline', () => { connectionState.value = 'offline' })
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt.value = event })
@@ -446,38 +480,83 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
     </section>
   </div>
 
-  <main v-else class="chat-shell" :class="{ 'mobile-room-open': mobileRoomOpen }">
-    <aside class="sidebar">
-      <header class="account-header">
-        <button class="identity" @click="Object.assign(profile,{display_name:me.display_name,about:me.about||''});showProfile=true"><van-image round width="42" height="42"><template #error>{{ initials(me.display_name) }}</template></van-image><span><b>{{ me.display_name }}</b><small>@{{ me.username }}</small></span></button>
-        <div class="account-actions"><van-button icon="desktop-o" size="small" round @click="installApp"/><van-button :icon="pushEnabled?'bell':'bell-o'" size="small" round @click="enableNotifications"/><van-button icon="friends-o" size="small" round @click="showFriendSearch=true"/><van-button icon="revoke" size="small" round @click="logout"/></div>
-      </header>
-      <van-search v-model="search" :placeholder="activeView==='friends'?'搜索好友':'搜索会话'" :disabled="activeView==='support'" />
-      <van-tabs v-model:active="activeView" shrink>
-        <van-tab name="chats" title="消息" />
-        <van-tab name="friends"><template #title>好友 <van-badge v-if="requests.length" :content="requests.length" /></template></van-tab>
-        <van-tab v-if="me.is_support" name="support"><template #title>客服 <van-badge v-if="supportThreads.filter(x=>x.status==='open').length" :content="supportThreads.filter(x=>x.status==='open').length" /></template></van-tab>
-      </van-tabs>
-      <section v-if="activeView==='chats'" class="side-scroll">
-        <van-cell v-if="archivedCount||showArchived" is-link :title="showArchived?'返回消息':'已存档'" :value="showArchived?'':archivedCount" @click="showArchived=!showArchived" />
-        <van-swipe-cell v-for="chat in filteredChats" :key="chat.id">
-          <button class="chat-row" :class="{active:activeId===chat.id}" @click="openRoom(chat.id)" @contextmenu.prevent="conversationMenu=chat">
-            <span class="avatar">{{ initials(chat.name) }}</span><span class="chat-copy"><span><b>{{ chat.name||'对话' }}</b><van-badge v-if="chat.unread" :content="chat.unread" /></span><small>{{ chat.last_message?'🔒 端到端加密消息':'开始加密对话' }}</small></span><van-icon v-if="chat.pinned" name="star"/><van-icon v-if="chat.muted" name="volume-o"/>
-          </button>
-          <template #right><van-button square type="primary" text="操作" class="swipe-action" @click="conversationMenu=chat" /></template>
-        </van-swipe-cell>
-        <van-empty v-if="!filteredChats.length" :description="showArchived?'没有已存档会话':'没有会话'" />
-      </section>
-      <section v-else-if="activeView==='friends'" class="side-scroll">
-        <template v-if="requests.length"><h3>好友申请</h3><van-cell v-for="user in requests" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-space><van-button size="mini" type="primary" @click="acceptFriend(user.id)">接受</van-button><van-button size="mini" type="danger" plain @click="removeFriend(user,true)">拒绝</van-button></van-space></template></van-cell></template>
-        <h3>好友列表</h3><van-swipe-cell v-for="user in filteredFriends" :key="user.id"><van-cell is-link :title="user.display_name" :label="`@${user.username}${user.about?' · '+user.about:''}`" @click="createDirect(user.id)"/><template #right><van-button square type="danger" text="删除" class="swipe-action" @click="removeFriend(user)"/></template></van-swipe-cell><van-empty v-if="!filteredFriends.length" description="还没有好友" />
-      </section>
-      <section v-else class="side-scroll"><button v-for="thread in supportThreads" :key="thread.id" class="chat-row" :class="{active:supportActive===thread.id}" @click="openSupport(thread.id)"><span class="avatar">客</span><span class="chat-copy"><span><b>{{ thread.visitor_name||'游客' }}</b><van-tag :type="thread.status==='open'?'success':'default'">{{ thread.status==='open'?'进行中':'已结束' }}</van-tag></span><small>{{ thread.site_name }} · {{ thread.last_message||'等待游客消息' }}</small></span></button><van-empty v-if="!supportThreads.length" description="暂无游客咨询" /></section>
-      <van-button v-if="activeView==='chats'" class="floating-group" round icon="cluster-o" type="primary" @click="friends.length?showGroup=true:activeView='friends'">新建群聊</van-button>
+  <main v-else class="signal-shell" :class="{ 'mobile-room-open': mobileRoomOpen }">
+    <nav class="app-rail" aria-label="主导航">
+      <div class="window-dots"><i></i><i></i><i></i></div>
+      <van-button class="rail-menu" icon="bars" round aria-label="菜单" />
+      <van-badge :content="unreadCount||undefined" :show-zero="false"><van-button :class="{active:activeView==='chats'||activeView==='new-chat'}" icon="chat-o" round @click="selectView('chats')" aria-label="聊天" /></van-badge>
+      <van-badge :content="requests.length||undefined" :show-zero="false"><van-button :class="{active:activeView==='friends'}" icon="friends-o" round @click="selectView('friends')" aria-label="联系人" /></van-badge>
+      <van-button icon="phone-o" round @click="showToast('当前版本暂未启用音视频通话')" aria-label="通话" />
+      <van-button v-if="me.is_support" :class="{active:activeView==='support'}" icon="service-o" round @click="selectView('support')" aria-label="客服" />
+      <van-button class="rail-settings" :class="{active:activeView==='settings'}" icon="setting-o" round @click="selectView('settings')" aria-label="设置" />
+    </nav>
+
+    <aside class="list-pane">
+      <template v-if="activeView==='settings'">
+        <header class="panel-title"><h1>设置</h1></header>
+        <button class="settings-profile" @click="openSetting('profile')"><span class="avatar large">{{ initials(me.display_name) }}</span><span><b>{{ me.display_name }}</b><small>@{{ me.username }}</small><small>{{ me.about||'编辑个人资料' }}</small></span><van-icon name="qr" /></button>
+        <div class="settings-menu side-scroll">
+          <button :class="{active:settingsSection==='profile'}" @click="openSetting('profile')"><van-icon name="contact"/>账户</button>
+          <button :class="{active:settingsSection==='general'}" @click="openSetting('general')"><van-icon name="setting-o"/>通用</button>
+          <button :class="{active:settingsSection==='appearance'}" @click="openSetting('appearance')"><van-icon name="eye-o"/>外观</button>
+          <button :class="{active:settingsSection==='chat'}" @click="openSetting('chat')"><van-icon name="chat-o"/>聊天</button>
+          <button :class="{active:settingsSection==='notifications'}" @click="openSetting('notifications')"><van-icon name="bell"/>提醒</button>
+          <button :class="{active:settingsSection==='privacy'}" @click="openSetting('privacy')"><van-icon name="lock"/>隐私</button>
+          <button :class="{active:settingsSection==='data'}" @click="openSetting('data')"><van-icon name="bar-chart-o"/>数据使用量</button>
+          <button :class="{active:settingsSection==='backup'}" @click="openSetting('backup')"><van-icon name="underway-o"/>备份</button>
+          <button class="logout-setting" @click="logout"><van-icon name="revoke"/>退出登录</button>
+        </div>
+      </template>
+
+      <template v-else-if="activeView==='new-chat'">
+        <header class="panel-title"><van-button icon="arrow-left" round @click="selectView('chats')"/><h1>新聊天</h1></header>
+        <van-search v-model="friendQuery" autofocus placeholder="姓名或用户名" />
+        <section class="side-scroll new-chat-list">
+          <button class="quick-action" @click="showGroup=true"><span><van-icon name="cluster-o"/></span>新建群组</button>
+          <button class="quick-action" @click="showFriendSearch=true"><span><van-icon name="contact"/></span>按用户名查找</button>
+          <h3>联系人</h3>
+          <button v-for="user in newChatFriends" :key="user.id" class="contact-row" @click="createDirect(user.id)"><span class="avatar">{{ initials(user.display_name) }}</span><span><b>{{ user.display_name }}</b><small>@{{ user.username }}</small></span></button>
+          <van-cell v-for="user in userResults" :key="`result-${user.id}`" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-button size="small" type="primary" @click="relationshipAction(user)">{{ {none:'添加',outgoing:'取消申请',incoming:'去确认',friend:'发消息'}[user.relationship] }}</van-button></template></van-cell>
+        </section>
+      </template>
+
+      <template v-else>
+        <header class="panel-title"><h1>{{ activeView==='chats'?'聊天':activeView==='friends'?'联系人':'客服' }}</h1><div><van-button v-if="activeView==='chats'" icon="edit" round @click="openNewChat"/><van-button icon="ellipsis" round @click="activeView==='chats'&&(showArchived=!showArchived)"/></div></header>
+        <div class="panel-search"><van-search v-model="search" :placeholder="activeView==='friends'?'搜索联系人':activeView==='chats'?'搜索聊天':'搜索客服会话'"/><van-button v-if="activeView==='chats'" :class="{active:unreadOnly}" icon="filter-o" round type="primary" @click="unreadOnly=!unreadOnly"/></div>
+        <section v-if="activeView==='chats'" class="side-scroll">
+          <div v-if="unreadOnly" class="filter-title"><b>按未读筛选</b><button @click="unreadOnly=false">清除筛选</button></div>
+          <van-cell v-if="archivedCount||showArchived" is-link :title="showArchived?'返回消息':'已存档'" :value="showArchived?'':archivedCount" @click="showArchived=!showArchived" />
+          <van-swipe-cell v-for="chat in filteredChats" :key="chat.id"><button class="chat-row" :class="{active:activeId===chat.id}" @click="openRoom(chat.id)" @contextmenu.prevent="conversationMenu=chat"><span class="avatar">{{ initials(chat.name) }}</span><span class="chat-copy"><span><b>{{ chat.name||'对话' }}</b><van-badge v-if="chat.unread" :content="chat.unread" /></span><small>{{ chat.last_message?'端到端加密消息':'开始聊天' }}</small></span><van-icon v-if="chat.pinned" name="star"/><van-icon v-if="chat.muted" name="volume-o"/></button><template #right><van-button square type="primary" text="操作" class="swipe-action" @click="conversationMenu=chat" /></template></van-swipe-cell>
+          <div v-if="!filteredChats.length" class="list-empty"><van-icon name="chat-o"/><p>{{ unreadOnly?'没有未读的聊天记录':showArchived?'没有已存档会话':'还没有聊天' }}</p><van-button v-if="unreadOnly" round @click="unreadOnly=false">清除筛选</van-button><van-button v-else round type="primary" @click="openNewChat">发起新聊天</van-button></div>
+        </section>
+        <section v-else-if="activeView==='friends'" class="side-scroll"><template v-if="requests.length"><h3>好友申请</h3><van-cell v-for="user in requests" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-space><van-button size="mini" type="primary" @click="acceptFriend(user.id)">接受</van-button><van-button size="mini" type="danger" plain @click="removeFriend(user,true)">拒绝</van-button></van-space></template></van-cell></template><h3>联系人</h3><van-swipe-cell v-for="user in filteredFriends" :key="user.id"><button class="contact-row" @click="createDirect(user.id)"><span class="avatar">{{ initials(user.display_name) }}</span><span><b>{{ user.display_name }}</b><small>@{{ user.username }}</small></span></button><template #right><van-button square type="danger" text="删除" class="swipe-action" @click="removeFriend(user)"/></template></van-swipe-cell><van-empty v-if="!filteredFriends.length" description="还没有联系人" /></section>
+        <section v-else class="side-scroll"><button v-for="thread in supportThreads" :key="thread.id" class="chat-row" :class="{active:supportActive===thread.id}" @click="openSupport(thread.id)"><span class="avatar">客</span><span class="chat-copy"><span><b>{{ thread.visitor_name||'游客' }}</b><van-tag :type="thread.status==='open'?'success':'default'">{{ thread.status==='open'?'进行中':'已结束' }}</van-tag></span><small>{{ thread.site_name }} · {{ thread.last_message||'等待游客消息' }}</small></span></button><van-empty v-if="!supportThreads.length" description="暂无游客咨询" /></section>
+      </template>
     </aside>
 
     <section class="conversation-pane">
-      <div v-if="!activeId&&!supportActive" class="empty-state"><van-icon name="shield-o" size="64" color="#2c6bed"/><h2>选择一段对话</h2><p>消息内容与图片均在设备端完成端到端加密。</p></div>
+      <template v-if="activeView==='settings'">
+        <header class="settings-content-title"><van-button class="mobile-only" icon="arrow-left" round @click="settingsMobileOpen=false"/><h2>{{ {profile:'个人资料',general:'通用',appearance:'外观',chat:'聊天',notifications:'提醒',privacy:'隐私',data:'数据使用量',backup:'备份'}[settingsSection] }}</h2></header>
+        <div class="settings-content">
+          <section v-if="settingsSection==='profile'" class="settings-page profile-page"><div class="profile-avatar"><span class="avatar huge">{{ initials(me.display_name) }}</span><van-button round size="small" @click="showProfile=true">编辑资料</van-button></div><div class="setting-card"><van-field v-model="profile.display_name" label="昵称" maxlength="80" left-icon="contact"/><van-field v-model="profile.about" label="关于" maxlength="160" left-icon="edit"/></div><p class="setting-help">您的个人资料以及对其所做的更改将对联系人和群组可见。</p><div class="setting-card"><van-cell icon="label-o" title="用户名" :value="`@${me.username}`"/><van-cell icon="qr" title="二维码或链接" is-link @click="showToast('用户名：@'+me.username)"/></div><van-button type="primary" round @click="saveProfile">保存个人资料</van-button></section>
+
+          <section v-else-if="settingsSection==='general'" class="settings-page"><div class="setting-card"><van-cell title="用户名" :value="`@${me.username}`"/><van-cell title="设备名称" :value="window?.signalDesktop?'Windows 客户端':'网页端'"/></div><h3>系统</h3><div class="setting-card"><van-cell title="安装到桌面" is-link @click="installApp"/><van-cell title="退出当前账号" is-link @click="logout"/></div></section>
+
+          <section v-else-if="settingsSection==='appearance'" class="settings-page"><div class="setting-card"><van-cell icon="globe-o" title="语言" value="简体中文"/><van-cell icon="eye-o" title="主题"><template #value><van-radio-group v-model="theme" direction="horizontal"><van-radio name="dark">深色</van-radio><van-radio name="light">浅色</van-radio></van-radio-group></template></van-cell><van-cell icon="flower-o" title="聊天颜色"><template #value><span class="accent-dot"></span></template></van-cell><van-field v-model="zoom" type="number" label="缩放级别" input-align="right" suffix="%" min="85" max="125"/></div><p class="setting-help">外观设置只保存在当前设备。</p></section>
+
+          <section v-else-if="settingsSection==='chat'" class="settings-page"><div class="setting-card"><van-cell center title="继续存档静音聊天" label="收到新消息时仍保持存档"><template #right-icon><van-switch v-model="preferences.keepMutedArchived"/></template></van-cell></div><h3>文本输入</h3><div class="setting-card"><van-cell center title="检查消息输入框中的文字拼写"><template #right-icon><van-switch v-model="preferences.spellcheck"/></template></van-cell><van-cell center title="将文字表情转换为表情符号"><template #right-icon><van-switch v-model="preferences.emojiConvert"/></template></van-cell><van-cell center title="生成链接预览"><template #right-icon><van-switch v-model="preferences.linkPreview"/></template></van-cell></div></section>
+
+          <section v-else-if="settingsSection==='notifications'" class="settings-page"><div class="setting-card"><van-cell center title="桌面消息通知" label="允许在应用处于后台时接收提醒"><template #right-icon><van-switch :model-value="pushEnabled" @click="enableNotifications"/></template></van-cell><van-cell title="安装应用" label="获得更稳定的桌面通知" is-link @click="installApp"/></div></section>
+
+          <section v-else-if="settingsSection==='privacy'" class="settings-page"><h3>消息传输</h3><div class="setting-card"><van-cell center title="已读回执"><template #right-icon><van-switch v-model="preferences.readReceipts"/></template></van-cell><van-cell center title="“正在输入”提示"><template #right-icon><van-switch v-model="preferences.typingIndicators"/></template></van-cell></div><p class="setting-help">这些偏好设置仅影响当前设备界面，不改变端到端加密机制。</p></section>
+
+          <section v-else-if="settingsSection==='data'" class="settings-page"><div class="setting-card"><van-cell icon="photo-o" title="图片上传上限" value="8 MB"/><van-cell icon="records-o" title="消息历史" value="仅存储在本机"/><van-cell icon="shield-o" title="传输方式" value="端到端加密"/></div></section>
+
+          <section v-else class="settings-page"><div class="setting-card"><van-cell icon="underway-o" title="本地聊天记录" label="聊天记录保存在当前设备的本地数据库中"/><van-cell icon="desktop-o" title="Windows 数据" label="Windows 客户端使用独立本地持久化存储"/></div><p class="setting-help">清除浏览器或应用数据会移除本机历史记录，请妥善保管设备。</p></section>
+        </div>
+      </template>
+
+      <div v-else-if="activeView==='new-chat'||(!activeId&&!supportActive)" class="empty-state"><van-icon name="chat-o" size="82"/><h2>欢迎使用 Signal</h2><p>{{ activeView==='new-chat'?'选择联系人开始聊天':'从左侧选择一段对话' }}</p></div>
       <template v-else-if="activeId">
         <van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0"><template #right><span class="connection" :class="connectionState">{{ connectionState==='connected'?'已连接':connectionState==='offline'?'已离线':'连接中' }}</span></template></van-nav-bar>
         <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
@@ -498,7 +577,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           <div v-if="replyDraft" class="draft"><span><b>引用 {{ replyDraft.sender_name }}</b>{{ replyDraft.body }}</span><van-icon name="cross" @click="replyDraft=null"/></div>
           <div v-if="imageDraftURL" class="draft image-draft"><img :src="imageDraftURL"><span>{{ imageDraft.name }}</span><van-icon name="cross" @click="clearImage"/></div>
           <div v-if="showEmoji" class="emoji-panel"><van-tabs v-model:active="emojiCategory" shrink><van-tab v-for="(_,name) in emojiSets" :key="name" :name="name" :title="name"/></van-tabs><div><button v-for="emoji in currentEmoji" :key="emoji" @click="insertEmoji(emoji)">{{ emoji }}</button></div></div>
-          <div class="composer"><van-button icon="smile-o" round @click="showEmoji=!showEmoji"/><van-button icon="photograph" round @click="imageInput.click()"/><textarea v-model="composer" rows="1" placeholder="发送消息" @keydown="onComposerKeydown"/><van-button icon="guide-o" round type="primary" :loading="sending" @click="sendMessage"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
+          <div class="composer"><van-button icon="smile-o" round @click="showEmoji=!showEmoji"/><van-button icon="photograph" round @click="imageInput.click()"/><textarea v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @keydown="onComposerKeydown"/><van-button icon="guide-o" round type="primary" :loading="sending" @click="sendMessage"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
         </div>
       </template>
 
