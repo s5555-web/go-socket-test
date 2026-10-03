@@ -25,7 +25,7 @@ const historyCursor = ref('')
 const historyDone = ref(false)
 const historyLoading = ref(false)
 const connectionState = ref('connecting')
-const securityLabel = ref('🔒 端到端加密')
+const securityLabel = ref('安全码校验中…')
 const composer = ref('')
 const sending = ref(false)
 const replyDraft = ref(null)
@@ -215,7 +215,7 @@ async function openRoom(id) {
     await E2EE.trustMemberKeys(changed)
   }
   const code = await E2EE.fingerprint(members.value)
-  securityLabel.value = `${E2EE.isPostQuantumReady(members.value) ? '🛡 混合后量子端到端加密' : '🔒 端到端加密'} · 安全码 ${code}`
+  securityLabel.value = `安全码 ${code}`
   await historyStore.markRead(id)
   await api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
   const page = await historyStore.page(id)
