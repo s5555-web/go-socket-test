@@ -45,6 +45,12 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	// WebSocket authentication uses a single-use 30-second ticket. The long-lived
 	// bearer token is never copied into a URL or proxy access log.
 	e.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/ws"}}), gin.Recovery())
+	e.Use(func(c *gin.Context) {
+		if c.Request.URL.Path == "/assets/support-widget.js" {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		c.Next()
+	})
 	sock := &socket.Handler{Hub: a.hub, Authorize: a.auth.ConsumeWebSocketTicket}
 	sock.Config.ReadBufferSize = cfg.Socket.ReadBufferSize
 	sock.Config.WriteBufferSize = cfg.Socket.WriteBufferSize
