@@ -112,15 +112,19 @@ button { color: inherit; }
 .settings-menu .van-icon { width: 18px; font-size: 14px; }
 .settings-menu .logout-setting { margin-top: 16px; color: #ff645d; }
 
-.conversation-pane { min-width: 0; background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+.conversation-pane { position: relative; min-width: 0; background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
 .empty-state { margin: auto; text-align: center; color: var(--muted); }
 .empty-state > .van-icon { color: var(--text); font-size: 40px !important; }
 .empty-state h2 { margin-bottom: 8px; color: var(--text); }
 .empty-state p { margin: 0; }
 .conversation-pane > .van-nav-bar { background: var(--panel); border-bottom: 1px solid var(--border); }
-.connection { font-size: 12px; color: #f59e0b; }
-.connection.connected { color: #38b879; }
-.connection.offline { color: #ff6159; }
+.connection-banner { position: absolute; z-index: 12; top: 58px; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 28px)); min-height: 44px; padding: 7px 9px; display: flex; align-items: center; gap: 9px; border: 1px solid #d58d28; border-radius: 12px; background: #3b2d18f2; color: #ffd99c; box-shadow: 0 8px 24px #0005; backdrop-filter: blur(12px); }
+.connection-banner.offline { border-color: #bd4d49; background: #412323f2; color: #ffc0bc; }
+.connection-banner > .van-icon { flex: 0 0 auto; font-size: 15px; }
+.connection-banner > span { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.connection-banner b { font-size: 12px; }
+.connection-banner small { overflow: hidden; color: inherit; opacity: .76; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.connection-banner button { flex: 0 0 auto; padding: 5px 9px; border: 0; border-radius: 8px; background: #ffffff18; color: inherit; font-size: 11px; cursor: pointer; }
 
 .settings-content-title { height: 82px; display: flex; justify-content: center; align-items: center; border-bottom: 1px solid transparent; }
 .settings-content-title h2 { margin: 0; font-size: 20px; }

@@ -33,6 +33,7 @@ const historyCursor = ref('')
 const historyDone = ref(false)
 const historyLoading = ref(false)
 const connectionState = ref('connecting')
+const connectionError = ref('')
 const composer = ref('')
 const composerInput = ref(null)
 const sending = ref(false)
@@ -64,6 +65,7 @@ const supportBusy = ref(false)
 let socket = null
 let reconnectTimer = null
 let reconnectAttempt = 0
+let socketConnectTimer = null
 let socketEverConnected = false
 let socketEventChain = Promise.resolve()
 let supportTimer = null
@@ -382,7 +384,15 @@ async function createGroup() { const result = await api('/conversations', { meth
 async function saveProfile() { await api('/me/profile', { method: 'PUT', body: JSON.stringify(profile) }); Object.assign(me.value, profile); showProfile.value = false; notify('个人资料已保存') }
 function logout() { localStorage.removeItem('token'); location.reload() }
 
-async function refreshSupport() { if (!me.value?.is_support) return; supportThreads.value = await api('/support/threads') }
+async function refreshSupport() {
+	if (!me.value?.is_support) return
+	supportThreads.value = await api('/support/threads')
+	if (!supportActive.value) return
+	const latestID = supportMessages.value.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0)
+	const incoming = await api(`/support/threads/${supportActive.value}/messages?after=${latestID}`)
+	const existing = new Set(supportMessages.value.map(item => Number(item.id)))
+	supportMessages.value.push(...incoming.filter(item => !existing.has(Number(item.id))))
+}
 async function applySupportRole(enabled) {
 	if (!me.value) return
 	me.value.is_support = Boolean(enabled)
@@ -425,9 +435,10 @@ async function notifyIncoming(message) {
   } catch (error) { console.warn('notification failed', error) }
 }
 async function handleSocketEvent(event) {
-  if (event.type === 'message') { await addMessage(event.data); if (event.data.sender_id !== me.value.id) await ackMessage(event.data.id); await notifyIncoming(event.data); if (activeId.value === event.data.conversation_id && !document.hidden) api(`/conversations/${event.data.conversation_id}/read`, { method: 'POST' }).catch(() => {}); await loadChats() }
-  else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
-  else if (event.type === 'support_message') { await refreshSupport(); if (supportActive.value === Number(event.thread_id)) supportMessages.value.push(event.data) }
+	if (event.type === 'socket_ready') { connectionState.value = 'connected'; connectionError.value = '' }
+	else if (event.type === 'message') { await addMessage(event.data); if (event.data.sender_id !== me.value.id) await ackMessage(event.data.id); await notifyIncoming(event.data); if (activeId.value === event.data.conversation_id && !document.hidden) api(`/conversations/${event.data.conversation_id}/read`, { method: 'POST' }).catch(() => {}); await loadChats() }
+	else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
+	else if (event.type === 'support_message') { await refreshSupport(); if (supportActive.value === Number(event.thread_id) && !supportMessages.value.some(item => Number(item.id) === Number(event.data.id))) supportMessages.value.push(event.data) }
 	else if (event.type === 'support_role') { await applySupportRole(event.is_support); notify(event.is_support ? '客服权限已启用' : '客服权限已取消') }
   else if (event.type === 'conversation') {
     if (event.action === 'cleared') await applyClear(event)
@@ -435,20 +446,49 @@ async function handleSocketEvent(event) {
     await loadChats()
   }
 }
-function scheduleReconnect() { clearTimeout(reconnectTimer); if (!token.value || !navigator.onLine) { connectionState.value = 'offline'; return } connectionState.value = 'reconnecting'; reconnectTimer = setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempt++, 5)) + Math.random() * 500) }
+function scheduleReconnect(reason = '') {
+	clearTimeout(reconnectTimer)
+	if (!token.value || !navigator.onLine) { connectionState.value = 'offline'; connectionError.value = '网络不可用'; return }
+	connectionState.value = 'reconnecting'
+	connectionError.value = reason || '实时连接已断开'
+	reconnectTimer = setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempt++, 5)) + Math.random() * 500)
+}
+function reconnectNow() {
+	clearTimeout(reconnectTimer)
+	clearTimeout(socketConnectTimer)
+	reconnectAttempt = 0
+	connectionError.value = ''
+	const current = socket
+	socket = null
+	current?.close()
+	connect()
+}
 async function connect() {
-  clearTimeout(reconnectTimer)
-  if (!token.value || !navigator.onLine) return scheduleReconnect()
-  if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return
-  connectionState.value = socketEverConnected ? 'reconnecting' : 'connecting'
-  try {
-    const issued = await api('/ws-ticket', { method: 'POST' }), scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-    const current = new WebSocket(`${scheme}://${location.host}/ws?ticket=${encodeURIComponent(issued.ticket)}`); socket = current
-    current.onopen = async () => { if (socket !== current) return; socketEverConnected = true; reconnectAttempt = 0; connectionState.value = 'connected'; await syncOffline() }
-    current.onmessage = message => { let data; try { data = JSON.parse(message.data) } catch { return } socketEventChain = socketEventChain.then(() => handleSocketEvent(data)).catch(console.warn) }
-    current.onerror = () => current.close()
-    current.onclose = () => { if (socket === current) { socket = null; scheduleReconnect() } }
-  } catch { scheduleReconnect() }
+	clearTimeout(reconnectTimer)
+	if (!token.value || !navigator.onLine) return scheduleReconnect()
+	if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return
+	connectionState.value = socketEverConnected ? 'reconnecting' : 'connecting'
+	connectionError.value = ''
+	try {
+		const issued = await api('/ws-ticket', { method: 'POST' }), scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+		const current = new WebSocket(`${scheme}://${location.host}/ws?ticket=${encodeURIComponent(issued.ticket)}`); socket = current
+		socketConnectTimer = setTimeout(() => { if (socket === current && current.readyState === WebSocket.CONNECTING) { connectionError.value = '连接服务器超时'; current.close() } }, 12000)
+		current.onopen = async () => {
+			if (socket !== current) return
+			clearTimeout(socketConnectTimer)
+			socketEverConnected = true
+			reconnectAttempt = 0
+			try {
+				const latestMe = await api('/me')
+				if (Boolean(latestMe.is_support) !== Boolean(me.value?.is_support)) await applySupportRole(latestMe.is_support)
+				else if (latestMe.is_support) await refreshSupport()
+				await syncOffline()
+			} catch (error) { console.warn('realtime sync failed', error) }
+		}
+		current.onmessage = message => { let data; try { data = JSON.parse(message.data) } catch { return } socketEventChain = socketEventChain.then(() => handleSocketEvent(data)).catch(console.warn) }
+		current.onerror = () => { if (socket !== current) return; connectionError.value = '无法建立实时连接'; current.close() }
+		current.onclose = () => { clearTimeout(socketConnectTimer); if (socket === current) { socket = null; scheduleReconnect(connectionError.value) } }
+	} catch (error) { scheduleReconnect(error.message || '连接服务器失败') }
 }
 
 function updateBadge() {
@@ -476,7 +516,7 @@ watch(preferences, value => { localStorage.signalChatPreferences = JSON.stringif
 onMounted(() => {
   applyAppearance()
   window.addEventListener('online', connect)
-  window.addEventListener('offline', () => { connectionState.value = 'offline' })
+	window.addEventListener('offline', () => { connectionState.value = 'offline'; connectionError.value = '网络不可用' })
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt.value = event })
   document.addEventListener('visibilitychange', () => { if (!document.hidden) connect() })
   if ('serviceWorker' in navigator) {
@@ -485,7 +525,7 @@ onMounted(() => {
   }
   if (token.value) start().catch(error => { authError.value = error.message })
 })
-onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer); socket?.close(); revokeImages(); clearImage() })
+onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer); clearTimeout(socketConnectTimer); socket?.close(); revokeImages(); clearImage() })
 </script>
 
 <template>
@@ -560,7 +600,8 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
       </template>
     </aside>
 
-    <section class="conversation-pane">
+	<section class="conversation-pane">
+	  <div v-if="connectionState!=='connected'&&(activeId||supportActive)" class="connection-banner" :class="connectionState"><van-icon name="warning-o"/><span><b>{{ connectionState==='offline'?'已离线':connectionState==='connecting'?'正在连接服务器':'实时连接已断开' }}</b><small>{{ connectionError||'正在尝试恢复连接' }}</small></span><button @click="reconnectNow">立即重连</button></div>
       <template v-if="activeView==='settings'">
         <header class="settings-content-title"><van-button class="mobile-only" icon="arrow-left" round @click="settingsMobileOpen=false"/><h2>{{ {profile:'个人资料',general:'通用',appearance:'外观',chat:'聊天',notifications:'提醒',privacy:'隐私',data:'数据使用量',backup:'备份'}[settingsSection] }}</h2></header>
         <div class="settings-content">
@@ -584,7 +625,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
 
       <div v-else-if="activeView==='new-chat'||(!activeId&&!supportActive)" class="empty-state"><van-icon name="chat-o" size="82"/><h2>欢迎使用 Signal</h2><p>{{ activeView==='new-chat'?'选择联系人开始聊天':'从左侧选择一段对话' }}</p></div>
       <template v-else-if="activeId">
-        <van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0"><template #right><span class="connection" :class="connectionState">{{ connectionState==='connected'?'已连接':connectionState==='offline'?'已离线':'连接中' }}</span></template></van-nav-bar>
+		<van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0" />
         <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
           <button v-if="!historyDone" class="history-button" @click="loadOlder">{{ historyLoading?'正在读取…':'上滑加载更早消息' }}</button>
           <template v-for="(entry,index) in entries" :key="entry.message.id">

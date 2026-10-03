@@ -47,6 +47,9 @@ func (h *Handler) Upgrade(c *gin.Context) {
 		ID:   strconv.FormatInt(uid, 10),
 	}
 	h.Hub.Register(client)
+	// Confirm that the connection is authenticated and registered in the hub.
+	// The browser's open event only confirms the transport handshake.
+	client.Send <- []byte(`{"type":"socket_ready"}`)
 	pongWait := time.Duration(h.Config.PongWaitSec) * time.Second
 	pingPeriod := time.Duration(h.Config.PingPeriodSec) * time.Second
 	go client.WritePump(pingPeriod)
