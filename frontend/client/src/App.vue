@@ -310,6 +310,16 @@ function chooseImage(file) {
   clearImage(); imageDraft.value = source; imageDraftURL.value = URL.createObjectURL(source)
   focusComposer()
 }
+function onComposerPaste(event) {
+  const clipboard = event.clipboardData
+  if (!clipboard) return
+  const item = Array.from(clipboard.items || []).find(item => item.kind === 'file' && item.type.startsWith('image/'))
+  const image = item?.getAsFile() || Array.from(clipboard.files || []).find(file => file.type.startsWith('image/'))
+  if (!image) return
+  event.preventDefault()
+  if (sending.value) return
+  chooseImage(image)
+}
 function clearImage() { if (imageDraftURL.value) URL.revokeObjectURL(imageDraftURL.value); imageDraft.value = null; imageDraftURL.value = '' }
 async function uploadAttachment(cipher, conversationID) {
   const response = await fetch(`/api/conversations/${conversationID}/attachments`, { method: 'POST', headers: { Authorization: `Bearer ${token.value}`, 'Content-Type': 'application/octet-stream' }, body: cipher })
@@ -688,7 +698,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           <div v-if="replyDraft" class="draft"><span><b>引用 {{ replyDraft.sender_name }}</b>{{ replyDraft.body }}</span><van-icon name="cross" @click="replyDraft=null"/></div>
           <div v-if="imageDraftURL" class="draft image-draft"><img :src="imageDraftURL"><span>{{ imageDraft.name }}</span><van-icon name="cross" @click="clearImage"/></div>
           <div v-if="showEmoji" class="emoji-panel"><van-tabs v-model:active="emojiCategory" shrink><van-tab v-for="(_,name) in emojiSets" :key="name" :name="name" :title="name"/></van-tabs><div><button v-for="emoji in currentEmoji" :key="emoji" @click="insertEmoji(emoji)">{{ emoji }}</button></div></div>
-          <div class="composer"><van-button class="composer-tool" icon="smile-o" @click="showEmoji=!showEmoji"/><van-button class="composer-tool" icon="photograph" @click="imageInput.click()"/><textarea ref="composerInput" v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @input="resizeComposer" @keydown="onComposerKeydown"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
+          <div class="composer"><van-button class="composer-tool" icon="smile-o" @click="showEmoji=!showEmoji"/><van-button class="composer-tool" icon="photograph" @click="imageInput.click()"/><textarea ref="composerInput" v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @input="resizeComposer" @keydown="onComposerKeydown" @paste="onComposerPaste"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
         </div>
       </template>
 
