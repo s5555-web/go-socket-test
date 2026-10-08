@@ -297,12 +297,18 @@ async function addMessage(message, persist = true) {
   await nextTick(); scrollBottom()
 }
 
+function focusComposer() {
+  // Focus during the user gesture so mobile keyboards can open too.
+  composerInput.value?.focus({ preventScroll: true })
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+}
 function chooseImage(file) {
   const source = file?.file || file
   if (!source) return
   if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(source.type)) return showFailToast('仅支持 JPG、PNG、WebP、GIF 图片')
   if (source.size > 8 * 1024 * 1024) return showFailToast('图片不能超过 8MB')
   clearImage(); imageDraft.value = source; imageDraftURL.value = URL.createObjectURL(source)
+  focusComposer()
 }
 function clearImage() { if (imageDraftURL.value) URL.revokeObjectURL(imageDraftURL.value); imageDraft.value = null; imageDraftURL.value = '' }
 async function uploadAttachment(cipher, conversationID) {
@@ -354,7 +360,7 @@ function openMessageMenu(entry, event) { openContextMenu(event); messageMenu.val
 function openConversationMenu(chat, event) { openContextMenu(event); conversationMenu.value = chat }
 watch([activeId, activeView], closeContextMenu)
 async function copyMessage(entry) { await navigator.clipboard.writeText(entry.payload.body); notify('已复制') }
-function replyMessage(entry) { replyDraft.value = { message_id: Number(entry.message.id), sender_name: String(entry.message.sender_name || '联系人').slice(0, 80), body: messageSummary(entry.payload, 160), has_attachment: Boolean(entry.payload.attachment) } }
+function replyMessage(entry) { replyDraft.value = { message_id: Number(entry.message.id), sender_name: String(entry.message.sender_name || '联系人').slice(0, 80), body: messageSummary(entry.payload, 160), has_attachment: Boolean(entry.payload.attachment) }; focusComposer() }
 async function deleteMessage(entry, all) {
   try { await showConfirmDialog({ title: all ? '撤回消息' : '删除消息', message: all ? '在线设备将同步删除本地副本。' : '只从当前设备删除，其他成员仍可看到。' }) } catch { return }
   if (all) { const query = new URLSearchParams({ scope: 'all' }); if (entry.payload.attachment?.id) query.set('attachment', entry.payload.attachment.id); await api(`/conversations/${entry.message.conversation_id}/messages/${entry.message.id}?${query}`, { method: 'DELETE' }) }
