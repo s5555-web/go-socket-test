@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { showConfirmDialog, showFailToast, showImagePreview, showSuccessToast, showToast } from 'vant'
 import { createLocalHistory } from './history.js'
 import E2EE from './crypto/e2ee.js'
+import ContextMenu from './ContextMenu.vue'
 
 const token = ref(localStorage.token || '')
 const me = ref(null)
@@ -53,6 +54,8 @@ const showGroup = ref(false)
 const group = reactive({ name: '', member_ids: [] })
 const conversationMenu = ref(null)
 const messageMenu = ref(null)
+const menuAnchor = ref(null)
+const menuRevision = ref(0)
 const showForward = ref(false)
 const forwardEntry = ref(null)
 const forwarding = ref(false)
@@ -316,14 +319,13 @@ async function sendMessage() {
   try {
     let attachment = null
     if (draft) {
-      showToast({ message: '正在加密图片…', forbidClick: true, duration: 0 })
       const encrypted = await E2EE.encryptAttachment(draft), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
       uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
     }
     const body = await E2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null)
     const sent = await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
     await addMessage(sent)
-    uploadedID = ''; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats(); showSuccessToast('已发送')
+    uploadedID = ''; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats()
   } catch (error) {
     if (uploadedID) fetch(`/api/conversations/${conversationID}/attachments/${uploadedID}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } }).catch(() => {})
     showFailToast(error.message)
@@ -340,7 +342,17 @@ function resizeComposer() {
 }
 function insertEmoji(value) { composer.value += value; emojiSets.最近 = [value, ...emojiSets.最近.filter(item => item !== value)].slice(0, 24); localStorage.signalRecentEmoji = JSON.stringify(emojiSets.最近) }
 
-function openMessageMenu(entry) { messageMenu.value = entry }
+function closeContextMenu() { messageMenu.value = null; conversationMenu.value = null }
+function openContextMenu(event) {
+  closeContextMenu()
+  const rect = event.currentTarget.getBoundingClientRect()
+  const pointer = event.type === 'contextmenu' && (event.clientX || event.clientY)
+  menuAnchor.value = pointer ? { x: event.clientX, top: event.clientY, bottom: event.clientY } : { x: rect.left, top: rect.top, bottom: rect.bottom }
+  menuRevision.value++
+}
+function openMessageMenu(entry, event) { openContextMenu(event); messageMenu.value = entry }
+function openConversationMenu(chat, event) { openContextMenu(event); conversationMenu.value = chat }
+watch([activeId, activeView], closeContextMenu)
 async function copyMessage(entry) { await navigator.clipboard.writeText(entry.payload.body); notify('已复制') }
 function replyMessage(entry) { replyDraft.value = { message_id: Number(entry.message.id), sender_name: String(entry.message.sender_name || '联系人').slice(0, 80), body: messageSummary(entry.payload, 160), has_attachment: Boolean(entry.payload.attachment) } }
 async function deleteMessage(entry, all) {
@@ -365,7 +377,7 @@ async function forwardMessage(conversationID) {
     }
     const body = await E2EE.encrypt(entry.payload.body || '', conversationID, targetMembers, attachment, null)
     await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
-    uploadedID = ''; showForward.value = false; forwardEntry.value = null; notify('消息已转发')
+    uploadedID = ''; showForward.value = false; forwardEntry.value = null
   } catch (error) { showFailToast(error.message) } finally { forwarding.value = false }
 }
 
@@ -618,7 +630,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
         <section v-if="activeView==='chats'" class="side-scroll">
           <div v-if="unreadOnly" class="filter-title"><b>按未读筛选</b><button @click="unreadOnly=false">清除筛选</button></div>
           <van-cell v-if="archivedCount||showArchived" is-link :title="showArchived?'返回消息':'已存档'" :value="showArchived?'':archivedCount" @click="showArchived=!showArchived" />
-          <van-swipe-cell v-for="chat in filteredChats" :key="chat.id"><button class="chat-row" :class="{active:activeId===chat.id}" @click="openRoom(chat.id)" @contextmenu.prevent="conversationMenu=chat"><span class="avatar">{{ initials(chat.name) }}</span><span class="chat-copy"><span><b>{{ chat.name||'对话' }}</b><van-badge v-if="chat.unread" :content="chat.unread" /></span><small>{{ chat.last_message?'端到端加密消息':'开始聊天' }}</small></span><van-icon v-if="chat.pinned" name="star"/><van-icon v-if="chat.muted" name="volume-o"/></button><template #right><van-button square type="primary" text="操作" class="swipe-action" @click="conversationMenu=chat" /></template></van-swipe-cell>
+          <van-swipe-cell v-for="chat in filteredChats" :key="chat.id"><button class="chat-row" :class="{active:activeId===chat.id}" @click="openRoom(chat.id)" @contextmenu.prevent="openConversationMenu(chat, $event)"><span class="avatar">{{ initials(chat.name) }}</span><span class="chat-copy"><span><b>{{ chat.name||'对话' }}</b><van-badge v-if="chat.unread" :content="chat.unread" /></span><small>{{ chat.last_message?'端到端加密消息':'开始聊天' }}</small></span><van-icon v-if="chat.pinned" name="star"/><van-icon v-if="chat.muted" name="volume-o"/></button><template #right><van-button square type="primary" text="操作" class="swipe-action" @click="openConversationMenu(chat, $event)" /></template></van-swipe-cell>
           <div v-if="!filteredChats.length" class="list-empty"><van-icon name="chat-o"/><p>{{ unreadOnly?'没有未读的聊天记录':showArchived?'没有已存档会话':'还没有聊天' }}</p><van-button v-if="unreadOnly" round @click="unreadOnly=false">清除筛选</van-button><van-button v-else round type="primary" @click="openNewChat">发起新聊天</van-button></div>
         </section>
         <section v-else-if="activeView==='friends'" class="side-scroll"><template v-if="requests.length"><h3>好友申请</h3><van-cell v-for="user in requests" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-space><van-button size="mini" type="primary" @click="acceptFriend(user.id)">接受</van-button><van-button size="mini" type="danger" plain @click="removeFriend(user,true)">拒绝</van-button></van-space></template></van-cell></template><h3>联系人</h3><van-swipe-cell v-for="user in filteredFriends" :key="user.id"><button class="contact-row" @click="createDirect(user.id)"><span class="avatar">{{ initials(user.display_name) }}</span><span><b>{{ user.display_name }}</b><small>@{{ user.username }}</small></span></button><template #right><van-button square type="danger" text="删除" class="swipe-action" @click="removeFriend(user)"/></template></van-swipe-cell><van-empty v-if="!filteredFriends.length" description="还没有联系人" /></section>
@@ -656,13 +668,13 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           <button v-if="!historyDone" class="history-button" @click="loadOlder">{{ historyLoading?'正在读取…':'上滑加载更早消息' }}</button>
           <template v-for="(entry,index) in entries" :key="entry.message.id">
             <div v-if="index===0||dayKey(entries[index-1].message.created_at)!==dayKey(entry.message.created_at)" class="day-label">{{ dayLabel(entry.message.created_at) }}</div>
-            <article class="message" :class="{mine:entry.message.sender_id===me.id}" @contextmenu.prevent="openMessageMenu(entry)" @dblclick="openMessageMenu(entry)">
+            <article class="message" :class="{mine:entry.message.sender_id===me.id}" @contextmenu.prevent="openMessageMenu(entry, $event)" @dblclick="openMessageMenu(entry, $event)">
               <small>{{ entry.message.sender_name }} · {{ new Date(entry.message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small>
               <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
               <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
               <van-image v-if="entry.imageUrl" :src="entry.imageUrl" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
               <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
-              <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry)" />
+              <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry, $event)" />
             </article>
           </template>
         </div>
@@ -685,7 +697,22 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
   <van-popup v-model:show="showFriendSearch" position="bottom" round class="sheet"><van-nav-bar title="添加好友" left-text="关闭" @click-left="showFriendSearch=false"/><van-search v-model="friendQuery" autofocus placeholder="搜索用户名或昵称"/><van-cell v-for="user in userResults" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-button size="small" type="primary" @click="relationshipAction(user)">{{ {none:'添加',outgoing:'取消申请',incoming:'去确认',friend:'发消息'}[user.relationship] }}</van-button></template></van-cell><van-empty v-if="friendQuery&&!userResults.length" description="没有找到用户"/></van-popup>
   <van-popup v-model:show="showProfile" position="bottom" round class="sheet"><van-nav-bar title="个人资料" left-text="取消" right-text="保存" @click-left="showProfile=false" @click-right="saveProfile"/><van-cell-group inset><van-field :model-value="`@${me?.username||''}`" label="用户名" readonly/><van-field v-model="profile.display_name" label="昵称" maxlength="80"/><van-field v-model="profile.about" label="个人简介" maxlength="160" type="textarea" autosize/></van-cell-group></van-popup>
   <van-popup v-model:show="showGroup" position="bottom" round class="sheet"><van-nav-bar title="新建群聊" left-text="取消" right-text="创建" @click-left="showGroup=false" @click-right="createGroup"/><van-cell-group inset><van-field v-model="group.name" label="群名称" placeholder="请输入群聊名称"/><van-checkbox-group v-model="group.member_ids"><van-cell v-for="user in friends" :key="user.id" :title="user.display_name" clickable @click="group.member_ids.includes(user.id)?group.member_ids.splice(group.member_ids.indexOf(user.id),1):group.member_ids.push(user.id)"><template #right-icon><van-checkbox :name="user.id"/></template></van-cell></van-checkbox-group></van-cell-group></van-popup>
-  <van-action-sheet :show="Boolean(conversationMenu)" title="会话操作" cancel-text="取消" @cancel="conversationMenu=null" @close="conversationMenu=null"><div class="action-grid"><van-button @click="conversationAction('mark_unread')">标记未读</van-button><van-button @click="conversationAction(conversationMenu?.pinned?'unpin':'pin')">{{ conversationMenu?.pinned?'取消置顶':'置顶' }}</van-button><van-button @click="conversationAction(conversationMenu?.archived?'unarchive':'archive')">{{ conversationMenu?.archived?'取消存档':'存档' }}</van-button><van-button @click="conversationAction(conversationMenu?.muted?'unmute':'mute',3600)">{{ conversationMenu?.muted?'取消静音':'静音 1 小时' }}</van-button><van-button type="warning" @click="conversationAction('clear')">清除双方记录</van-button><van-button type="danger" @click="conversationAction('delete')">删除对话</van-button></div></van-action-sheet>
-  <van-action-sheet :show="Boolean(messageMenu)" title="消息操作" cancel-text="取消" @cancel="messageMenu=null" @close="messageMenu=null"><div class="action-grid"><van-button @click="replyMessage(messageMenu);messageMenu=null">引用</van-button><van-button @click="forwardEntry=messageMenu;showForward=true;messageMenu=null">转发</van-button><van-button v-if="messageMenu?.payload.body" @click="copyMessage(messageMenu);messageMenu=null">复制文字</van-button><van-button type="warning" @click="deleteMessage(messageMenu,false);messageMenu=null">仅本机删除</van-button><van-button v-if="messageMenu?.message.sender_id===me?.id" type="danger" @click="deleteMessage(messageMenu,true);messageMenu=null">撤回双方</van-button></div></van-action-sheet>
+  <ContextMenu v-if="conversationMenu" :key="menuRevision" :anchor="menuAnchor" label="会话操作" @close="closeContextMenu">
+    <button role="menuitem" @click="conversationAction('mark_unread')"><van-icon name="comment-o" />标记未读</button>
+    <button role="menuitem" @click="conversationAction(conversationMenu.pinned?'unpin':'pin')"><van-icon name="back-top" />{{ conversationMenu.pinned?'取消置顶':'置顶' }}</button>
+    <button role="menuitem" @click="conversationAction(conversationMenu.archived?'unarchive':'archive')"><van-icon name="folder-o" />{{ conversationMenu.archived?'取消存档':'存档' }}</button>
+    <button role="menuitem" @click="conversationAction(conversationMenu.muted?'unmute':'mute',3600)"><van-icon name="volume-o" />{{ conversationMenu.muted?'取消静音':'静音 1 小时' }}</button>
+    <hr />
+    <button role="menuitem" class="danger" @click="conversationAction('clear')"><van-icon name="brush-o" />清除双方记录</button>
+    <button role="menuitem" class="danger" @click="conversationAction('delete')"><van-icon name="delete-o" />删除对话</button>
+  </ContextMenu>
+  <ContextMenu v-if="messageMenu" :key="menuRevision" :anchor="menuAnchor" label="消息操作" @close="closeContextMenu">
+    <button role="menuitem" @click="replyMessage(messageMenu);closeContextMenu()"><van-icon name="chat-o" />引用</button>
+    <button role="menuitem" @click="forwardEntry=messageMenu;showForward=true;closeContextMenu()"><van-icon name="share-o" />转发</button>
+    <template v-if="messageMenu.payload.body"><hr /><button role="menuitem" @click="copyMessage(messageMenu);closeContextMenu()"><van-icon name="description" />复制文字</button></template>
+    <hr />
+    <button v-if="messageMenu.message.sender_id===me?.id" role="menuitem" class="danger" @click="deleteMessage(messageMenu,true);closeContextMenu()"><van-icon name="revoke" />撤回双方</button>
+    <button role="menuitem" class="danger" @click="deleteMessage(messageMenu,false);closeContextMenu()"><van-icon name="delete-o" />仅本机删除</button>
+  </ContextMenu>
   <van-popup v-model:show="showForward" position="bottom" round class="sheet"><van-nav-bar title="转发到" left-text="取消" @click-left="showForward=false"/><van-cell v-for="chat in chats" :key="chat.id" is-link :title="chat.name" label="端到端加密转发" @click="forwardMessage(chat.id)"/></van-popup>
 </template>
