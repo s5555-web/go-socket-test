@@ -74,6 +74,7 @@ let socketConnectTimer = null
 let socketEverConnected = false
 let socketEventChain = Promise.resolve()
 let supportTimer = null
+let supportRefresh = null
 let friendSearchTimer = null
 const objectURLs = new Set()
 
@@ -220,7 +221,7 @@ async function decryptMessages(rawMessages) {
   const result = []
   for (const message of rawMessages) {
     const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
-    const entry = { message, payload, imageUrl: '', imageError: '' }
+    const entry = reactive({ message, payload, imageUrl: '', imageError: '' })
     result.push(entry)
     if (payload.attachment) loadEntryImage(entry)
   }
@@ -273,7 +274,7 @@ async function loadOlder() {
     const payloads = []
     for (const item of page) {
       const payload = await E2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, members.value, item.message.sender_id)
-      payloads.push({ message: item.message, payload, imageUrl: '', imageError: '' })
+      payloads.push(reactive({ message: item.message, payload, imageUrl: '', imageError: '' }))
     }
     entries.value = [...payloads, ...old]
     for (const item of payloads) if (item.payload.attachment) loadEntryImage(item)
@@ -291,7 +292,7 @@ async function addMessage(message, persist = true) {
   if (persist) await historyStore.put(message, active && !document.hidden)
   if (!active || entries.value.some(item => Number(item.message.id) === Number(message.id))) return
   const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
-  const entry = { message, payload, imageUrl: '', imageError: '' }
+  const entry = reactive({ message, payload, imageUrl: '', imageError: '' })
   entries.value.push(entry)
   if (payload.attachment) loadEntryImage(entry)
   await nextTick(); scrollBottom()
@@ -417,7 +418,11 @@ async function createGroup() { const result = await api('/conversations', { meth
 async function saveProfile() { await api('/me/profile', { method: 'PUT', body: JSON.stringify(profile) }); Object.assign(me.value, profile); showProfile.value = false; notify('个人资料已保存') }
 function logout() { localStorage.removeItem('token'); location.reload() }
 
-async function refreshSupport() {
+function refreshSupport() {
+  if (!supportRefresh) supportRefresh = fetchSupport().finally(() => { supportRefresh = null })
+  return supportRefresh
+}
+async function fetchSupport() {
 	if (!me.value?.is_support) return
 	supportThreads.value = await api('/support/threads')
 	if (!supportActive.value) return
@@ -426,14 +431,22 @@ async function refreshSupport() {
 	const existing = new Set(supportMessages.value.map(item => Number(item.id)))
 	supportMessages.value.push(...incoming.filter(item => !existing.has(Number(item.id))))
 }
+function updateSupportPolling() {
+  clearInterval(supportTimer)
+  supportTimer = null
+  if (me.value?.is_support && connectionState.value !== 'connected') {
+    supportTimer = setInterval(() => {
+      if (navigator.onLine) refreshSupport().catch(console.warn)
+    }, 8000)
+  }
+}
+watch([connectionState, () => me.value?.is_support], updateSupportPolling)
 async function applySupportRole(enabled) {
 	if (!me.value) return
 	me.value.is_support = Boolean(enabled)
-	clearInterval(supportTimer)
-	supportTimer = null
+	updateSupportPolling()
 	if (me.value.is_support) {
 		await refreshSupport()
-		supportTimer = setInterval(() => refreshSupport().catch(console.warn), 8000)
 		return
 	}
 	supportThreads.value = []
