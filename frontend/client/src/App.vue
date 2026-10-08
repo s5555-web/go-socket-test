@@ -414,7 +414,17 @@ async function deleteConversation(id) {
   try { await showConfirmDialog({ title: '删除对话', message: '确定从会话列表中删除？' }) } catch { return }
   await api(`/conversations/${id}`, { method: 'DELETE' }); if (activeId.value === id) activeId.value = 0; await loadChats(); notify('对话已删除')
 }
-async function createGroup() { const result = await api('/conversations', { method: 'POST', body: JSON.stringify(group) }); showGroup.value = false; Object.assign(group, { name: '', member_ids: [] }); await loadChats(); await openRoom(result.id) }
+async function createGroup() {
+  try {
+    const result = await api('/conversations', { method: 'POST', body: JSON.stringify(group) })
+    showGroup.value = false
+    Object.assign(group, { name: '', member_ids: [] })
+    await loadChats()
+    await openRoom(result.id)
+  } catch (error) {
+    showFailToast(error.message || '创建群聊失败，请重试')
+  }
+}
 async function saveProfile() { await api('/me/profile', { method: 'PUT', body: JSON.stringify(profile) }); Object.assign(me.value, profile); showProfile.value = false; notify('个人资料已保存') }
 function logout() { localStorage.removeItem('token'); location.reload() }
 

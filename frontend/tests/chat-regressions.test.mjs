@@ -56,3 +56,21 @@ test('support polling only runs while disconnected and refreshes are coalesced',
   context.updateSupportPolling()
   assert.equal(timers.size, 0)
 })
+
+test('group creation displays the API error and preserves the draft', async () => {
+  const group = { name: '测试群', member_ids: [2] }
+  const showGroup = ref(true)
+  let toast
+  const context = vm.createContext({
+    group, showGroup,
+    api: async () => { throw Error('只能邀请好友加入群聊') },
+    showFailToast: message => { toast = message },
+    loadChats: () => assert.fail('must not refresh on failure'),
+    openRoom: () => assert.fail('must not open room on failure')
+  })
+  vm.runInContext(section('async function createGroup()', '\nasync function saveProfile'), context)
+  await context.createGroup()
+  assert.equal(toast, '只能邀请好友加入群聊')
+  assert.equal(showGroup.value, true)
+  assert.deepEqual(group, { name: '测试群', member_ids: [2] })
+})
