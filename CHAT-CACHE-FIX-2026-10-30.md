@@ -41,3 +41,7 @@ Nginx：`/etc/nginx/sites-enabled/signal-web`，转发 `127.0.0.1:1802`。
 群聊输入 @ 后按昵称过滤成员，可点击或用方向键及 Enter/Tab 选择。点击群名称打开可搜索的成员列表，也可从列表提及成员。被提及的消息展示 @我 标记；成员 ID 和名字随消息正文加密，旧客户端仍可显示正文。
 浏览器模式去除会话返回箭头、名称靠左；手机浏览器保留列表菜单入口，桌面客户端和安装模式保留返回导航。
 17 项测试与生产构建通过。发布目录 `/opt/signal-web/releases/group-mentions-20261030`，备份 `/opt/signal-web/backups/client-before-group-mentions-20261030.tgz`。Service Worker v31，线上入口 `index-DJ_8zkQD.js` 与本地 SHA-256 一致；健康接口正常、服务 active。
+
+## 所有模式移除对话框返回按钮
+
+按后续要求，普通聊天与客服对话框均移除头部返回按钮以及手机浏览器列表按钮，不再区分浏览器、安装模式和桌面客户端。前端构建通过，Service Worker v32。发布目录 `/opt/signal-web/releases/remove-chat-back-20261030`，更新前备份 `/opt/signal-web/backups/client-before-remove-chat-back-20261030.tgz`。

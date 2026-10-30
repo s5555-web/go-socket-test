@@ -43,7 +43,6 @@ const connectionState = ref('connecting')
 const connectionError = ref('')
 const composer = ref('')
 const composerInput = ref(null)
-const browserMode = !window.signalDesktop && !window.matchMedia('(display-mode: standalone)').matches && !navigator.standalone
 const mentionRange = ref(null)
 const mentionIndex = ref(0)
 const selectedMentions = ref([])
@@ -915,8 +914,6 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
       <div v-else-if="activeView==='new-chat'||(!activeId&&!supportActive)" class="empty-state"><van-icon name="chat-o" size="82"/><h2>欢迎使用 Signal</h2><p>{{ activeView==='new-chat'?'选择联系人开始聊天':'从左侧选择一段对话' }}</p></div>
       <template v-else-if="activeId">
 		<header class="conversation-header">
-          <van-button v-if="!browserMode" icon="arrow-left" aria-label="返回" @click="activeId=0" />
-          <van-button v-else class="browser-chat-list" icon="wap-nav" aria-label="聊天列表" @click="activeId=0" />
           <button class="conversation-title" :disabled="!activeChat?.is_group" @click="openGroupMembers"><b>{{ activeChat?.name||'对话' }}</b><small v-if="activeChat?.is_group">{{ members.length }} 位成员 · 查看成员</small></button>
         </header>
         <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
@@ -947,7 +944,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
       </template>
 
       <template v-else>
-        <header class="conversation-header"><van-button v-if="!browserMode" icon="arrow-left" aria-label="返回" @click="supportActive=0"/><van-button v-else class="browser-chat-list" icon="wap-nav" aria-label="聊天列表" @click="supportActive=0"/><b class="support-title">{{ activeSupportThread?.visitor_name||'游客咨询' }}</b><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></header>
+        <header class="conversation-header"><b class="support-title">{{ activeSupportThread?.visitor_name||'游客咨询' }}</b><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></header>
 		<div ref="supportMessagesBox" class="messages"><template v-for="(message,index) in supportMessages" :key="message.id"><div v-if="index===0||dayKey(supportMessages[index-1].created_at)!==dayKey(message.created_at)" class="day-label">{{ dayLabel(message.created_at) }}</div><article class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }} · {{ new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small><p>{{ message.displayBody }}</p></article></template></div>
         <div v-if="activeSupportThread?.status==='open'" class="composer-wrap"><div class="composer"><textarea v-model="supportComposer" maxlength="2000" placeholder="回复游客" @keydown.enter.exact.prevent="sendSupport"/><van-button icon="guide-o" round type="primary" :loading="supportBusy" @click="sendSupport"/></div></div>
       </template>
