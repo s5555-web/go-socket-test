@@ -118,7 +118,7 @@ test('silent history merge reuses existing image nodes and keeps socket deliveri
 test('stale history decryption cannot populate a newer room selection', async () => {
   let finish
   const entries=ref([])
-  const context=vm.createContext({reactive,entries,activeId:ref(7),me:ref({id:1}),members:ref([]),document:{hidden:false},roomRevision:1,
+  const context=vm.createContext({mentionRange:ref(null),showMembers:ref(false),selectedMentions:ref([]),reactive,entries,activeId:ref(7),me:ref({id:1}),members:ref([]),document:{hidden:false},roomRevision:1,
     E2EE:{decryptPayload:()=>new Promise(resolve=>{finish=resolve})}})
   vm.runInContext(section('async function decryptMessages(', 'async function loadEntryImage('),context)
   const pending=context.decryptMessages([{id:1,body:'cipher',conversation_id:7}])
@@ -145,7 +145,7 @@ test('reopening the current room keeps history visible while network sync is pen
   const entry=reactive({message:{id:1,conversation_id:7,body:'cipher'},payload:{body:'cached'}})
   const entries=ref([entry]),memberList=[{id:1,public_key:'public'}]
   const context=vm.createContext({
-    reactive,entries,activeId:ref(7),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
+    mentionRange:ref(null),showMembers:ref(false),selectedMentions:ref([]),reactive,entries,activeId:ref(7),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
     members:ref(memberList),me:ref({id:1}),roomRevision:0,roomSessions:new Map(),memberSessions:new Map([[7,memberList]]),
     historyCursor:ref(''),historyDone:ref(false),messagesBox:ref(null),document:{hidden:false},console,
     localStorage:{getItem:()=>null,setItem(){}},historyStore:{PAGE:40,page:async()=>[{sort:'1',message:entry.message}],markRead:async()=>{}},
@@ -166,7 +166,7 @@ for (const cached of [false, true]) test(`opening ${cached?'cached':'remote-only
   const message={id:1,conversation_id:7,body:'cipher'},entries=ref([])
   let records=[],scrolls=0
   const context=vm.createContext({
-    reactive,entries,activeId:ref(0),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
+    mentionRange:ref(null),showMembers:ref(false),selectedMentions:ref([]),reactive,entries,activeId:ref(0),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
     members:ref([]),me:ref({id:1}),roomRevision:0,stickToLatest:true,
     roomSessions:new Map(cached?[[7,[{message,payload:{body:'cached'}}]]]:[]),memberSessions:new Map(),
     historyCursor:ref(''),historyDone:ref(false),messagesBox:ref({scrollHeight:1200,scrollTop:0,clientHeight:300}),document:{hidden:false},console,

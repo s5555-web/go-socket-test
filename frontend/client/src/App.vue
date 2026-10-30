@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { showConfirmDialog, showFailToast, showImagePreview, showSuccessToast, showToast } from 'vant'
 import { createLocalHistory } from './history.js'
 import E2EE from './crypto/e2ee.js'
+import { mentionAt, insertMention, sentMentions } from './mentions.js'
 import ContextMenu from './ContextMenu.vue'
 
 const token = ref(localStorage.token || '')
@@ -42,6 +43,20 @@ const connectionState = ref('connecting')
 const connectionError = ref('')
 const composer = ref('')
 const composerInput = ref(null)
+const browserMode = !window.signalDesktop && !window.matchMedia('(display-mode: standalone)').matches && !navigator.standalone
+const mentionRange = ref(null)
+const mentionIndex = ref(0)
+const selectedMentions = ref([])
+const showMembers = ref(false)
+const groupMembers = ref([])
+const memberQuery = ref('')
+const membersBusy = ref(false)
+const mentionOptions = computed(() => {
+  if (!activeChat.value?.is_group || !mentionRange.value) return []
+  const query = mentionRange.value.query.toLocaleLowerCase()
+  return members.value.filter(member => member.id !== me.value?.id && member.display_name.toLocaleLowerCase().includes(query))
+})
+const visibleGroupMembers = computed(() => groupMembers.value.filter(member => member.display_name.toLocaleLowerCase().includes(memberQuery.value.toLocaleLowerCase())))
 const sending = ref(false)
 const replyDraft = ref(null)
 const imageDraft = ref(null)
@@ -255,7 +270,10 @@ async function loadEntryImage(entry) {
 }
 
 async function openRoom(id) {
+  mentionRange.value = null
+  showMembers.value = false
   const sameRoom = activeId.value === id
+  if (!sameRoom) selectedMentions.value = []
   const revision = ++roomRevision
   activeView.value = 'chats'
   settingsMobileOpen.value = false
@@ -422,16 +440,63 @@ async function sendMessage() {
       const encrypted = await E2EE.encryptAttachment(draft), uploaded = await uploadAttachment(encrypted.cipher, conversationID)
       uploadedID = uploaded.id; attachment = { id: uploaded.id, ...encrypted.metadata }
     }
-    const body = await E2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null)
+    const body = await E2EE.encrypt(clear, conversationID, [...members.value], attachment, replyDraft.value ? { ...replyDraft.value } : null, activeChat.value?.is_group ? sentMentions(clear, selectedMentions.value) : [])
     const sent = await api(`/conversations/${conversationID}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
     await addMessage(sent)
-    uploadedID = ''; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats()
+    uploadedID = ''; selectedMentions.value = []; mentionRange.value = null; composer.value = ''; replyDraft.value = null; clearImage(); showEmoji.value = false; await loadChats()
   } catch (error) {
     if (uploadedID) fetch(`/api/conversations/${conversationID}/attachments/${uploadedID}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } }).catch(() => {})
     showFailToast(error.message)
   } finally { sending.value = false }
 }
-function onComposerKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }
+function updateMention() {
+  mentionRange.value = activeChat.value?.is_group ? mentionAt(composer.value, composerInput.value?.selectionStart ?? composer.value.length) : null
+  mentionIndex.value = 0
+  resizeComposer()
+}
+function chooseMention(member) {
+  if (!mentionRange.value) return
+  const inserted = insertMention(composer.value, mentionRange.value, member)
+  composer.value = inserted.text
+  selectedMentions.value = [...selectedMentions.value.filter(item => item.id !== member.id), { id: member.id, name: member.display_name }]
+  mentionRange.value = null
+  composerInput.value?.focus({ preventScroll: true })
+  nextTick(() => composerInput.value?.setSelectionRange(inserted.cursor, inserted.cursor))
+}
+async function openGroupMembers() {
+  if (!activeChat.value?.is_group) return
+  const id = activeId.value
+  groupMembers.value = members.value
+  memberQuery.value = ''
+  showMembers.value = true
+  membersBusy.value = true
+  try {
+    const result = await api(`/conversations/${id}/members`)
+    if (activeId.value === id) groupMembers.value = result
+  } catch (error) { showFailToast(error.message) }
+  finally { membersBusy.value = false }
+}
+function mentionGroupMember(member) {
+  showMembers.value = false
+  if (member.id === me.value.id) return
+  const cursor = composer.value.length
+  mentionRange.value = {start: cursor, end: cursor, query: ''}
+  if (cursor && !/\s$/.test(composer.value)) { composer.value += ' '; mentionRange.value.start++; mentionRange.value.end++ }
+  chooseMention(member)
+}
+function onComposerKeydown(event) {
+  if (event.isComposing) return
+  if (mentionRange.value && event.key === 'Escape') { event.preventDefault(); mentionRange.value = null; return }
+  if (mentionOptions.value.length) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      mentionIndex.value = (mentionIndex.value + (event.key === 'ArrowDown' ? 1 : -1) + mentionOptions.value.length) % mentionOptions.value.length
+      return
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); chooseMention(mentionOptions.value[mentionIndex.value] || mentionOptions.value[0]); return }
+  }
+  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() }
+}
 function resizeComposer() {
   nextTick(() => {
     const element = composerInput.value
@@ -849,7 +914,11 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
 
       <div v-else-if="activeView==='new-chat'||(!activeId&&!supportActive)" class="empty-state"><van-icon name="chat-o" size="82"/><h2>欢迎使用 Signal</h2><p>{{ activeView==='new-chat'?'选择联系人开始聊天':'从左侧选择一段对话' }}</p></div>
       <template v-else-if="activeId">
-		<van-nav-bar :title="activeChat?.name||'对话'" left-arrow @click-left="activeId=0" />
+		<header class="conversation-header">
+          <van-button v-if="!browserMode" icon="arrow-left" aria-label="返回" @click="activeId=0" />
+          <van-button v-else class="browser-chat-list" icon="wap-nav" aria-label="聊天列表" @click="activeId=0" />
+          <button class="conversation-title" :disabled="!activeChat?.is_group" @click="openGroupMembers"><b>{{ activeChat?.name||'对话' }}</b><small v-if="activeChat?.is_group">{{ members.length }} 位成员 · 查看成员</small></button>
+        </header>
         <div ref="messagesBox" class="messages" @scroll="onMessageScroll">
           <button v-if="!historyDone" class="history-button" @click="loadOlder">{{ historyLoading?'正在读取…':'上滑加载更早消息' }}</button>
           <template v-for="(entry,index) in entries" :key="entry.message.id">
@@ -857,6 +926,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
             <article class="message" :class="{mine:entry.message.sender_id===me.id}" @contextmenu.prevent="openMessageMenu(entry, $event)" @dblclick="openMessageMenu(entry, $event)">
               <small>{{ entry.message.sender_name }} · {{ new Date(entry.message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small>
               <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
+              <van-tag v-if="entry.payload.mentions?.some(member => Number(member.id)===Number(me.id))" type="primary">@我</van-tag>
               <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
               <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
               <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
@@ -865,21 +935,26 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
           </template>
         </div>
         <div class="composer-wrap">
+          <div v-if="mentionRange && activeChat?.is_group" class="mention-picker" role="listbox" aria-label="选择要提及的群成员">
+            <button v-for="(member,index) in mentionOptions" :key="member.id" type="button" role="option" :aria-selected="index===mentionIndex" :class="{selected:index===mentionIndex}" @mousedown.prevent @click="chooseMention(member)"><span class="avatar">{{ initials(member.display_name) }}</span><span>{{ member.display_name }}</span></button>
+            <p v-if="!mentionOptions.length">没有匹配的群成员</p>
+          </div>
           <div v-if="replyDraft" class="draft"><span><b>引用 {{ replyDraft.sender_name }}</b>{{ replyDraft.body }}</span><van-icon name="cross" @click="replyDraft=null"/></div>
           <div v-if="imageDraftURL" class="draft image-draft"><img :src="imageDraftURL"><span>{{ imageDraft.name }}</span><van-icon name="cross" @click="clearImage"/></div>
           <div v-if="showEmoji" class="emoji-panel"><van-tabs v-model:active="emojiCategory" shrink><van-tab v-for="(_,name) in emojiSets" :key="name" :name="name" :title="name"/></van-tabs><div><button v-for="emoji in currentEmoji" :key="emoji" @click="insertEmoji(emoji)">{{ emoji }}</button></div></div>
-          <div class="composer"><van-button class="composer-tool" icon="smile-o" @click="showEmoji=!showEmoji"/><van-button class="composer-tool" icon="photograph" @click="imageInput.click()"/><textarea ref="composerInput" v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @input="resizeComposer" @keydown="onComposerKeydown" @paste="onComposerPaste"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
+          <div class="composer"><van-button class="composer-tool" icon="smile-o" @click="showEmoji=!showEmoji"/><van-button class="composer-tool" icon="photograph" @click="imageInput.click()"/><textarea ref="composerInput" v-model="composer" rows="1" placeholder="发送消息" :spellcheck="preferences.spellcheck" @input="updateMention" @click="updateMention" @select="updateMention" @keydown="onComposerKeydown" @paste="onComposerPaste"/><input ref="imageInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="chooseImage($event.target.files?.[0])"></div>
         </div>
       </template>
 
       <template v-else>
-        <van-nav-bar :title="activeSupportThread?.visitor_name||'游客咨询'" left-arrow @click-left="supportActive=0"><template #right><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></template></van-nav-bar>
+        <header class="conversation-header"><van-button v-if="!browserMode" icon="arrow-left" aria-label="返回" @click="supportActive=0"/><van-button v-else class="browser-chat-list" icon="wap-nav" aria-label="聊天列表" @click="supportActive=0"/><b class="support-title">{{ activeSupportThread?.visitor_name||'游客咨询' }}</b><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></header>
 		<div ref="supportMessagesBox" class="messages"><template v-for="(message,index) in supportMessages" :key="message.id"><div v-if="index===0||dayKey(supportMessages[index-1].created_at)!==dayKey(message.created_at)" class="day-label">{{ dayLabel(message.created_at) }}</div><article class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }} · {{ new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small><p>{{ message.displayBody }}</p></article></template></div>
         <div v-if="activeSupportThread?.status==='open'" class="composer-wrap"><div class="composer"><textarea v-model="supportComposer" maxlength="2000" placeholder="回复游客" @keydown.enter.exact.prevent="sendSupport"/><van-button icon="guide-o" round type="primary" :loading="supportBusy" @click="sendSupport"/></div></div>
       </template>
     </section>
   </main>
 
+  <van-popup v-model:show="showMembers" position="right" class="members-sheet"><van-nav-bar :title="`群成员（${groupMembers.length}）`" right-text="关闭" @click-right="showMembers=false"/><van-search v-model="memberQuery" placeholder="搜索群成员"/><p v-if="membersBusy" class="members-hint">正在更新成员…</p><van-cell v-for="member in visibleGroupMembers" :key="member.id" :title="member.display_name" :label="member.id===me?.id?'我':`成员 ID：${member.id}`"><template #right-icon><van-button v-if="member.id!==me?.id" size="small" plain type="primary" @click="mentionGroupMember(member)">@ 提及</van-button></template></van-cell><van-empty v-if="!visibleGroupMembers.length&&!membersBusy" description="没有匹配的成员"/></van-popup>
   <van-popup v-model:show="showFriendSearch" position="bottom" round class="sheet"><van-nav-bar title="添加好友" left-text="关闭" @click-left="showFriendSearch=false"/><van-search v-model="friendQuery" autofocus placeholder="搜索用户名或昵称"/><van-cell v-for="user in userResults" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-button size="small" type="primary" @click="relationshipAction(user)">{{ {none:'添加',outgoing:'取消申请',incoming:'去确认',friend:'发消息'}[user.relationship] }}</van-button></template></van-cell><van-empty v-if="friendQuery&&!userResults.length" description="没有找到用户"/></van-popup>
   <van-popup v-model:show="showProfile" position="bottom" round class="sheet"><van-nav-bar title="个人资料" left-text="取消" right-text="保存" @click-left="showProfile=false" @click-right="saveProfile"/><van-cell-group inset><van-field :model-value="`@${me?.username||''}`" label="用户名" readonly/><van-field v-model="profile.display_name" label="昵称" maxlength="80"/><van-field v-model="profile.about" label="个人简介" maxlength="160" type="textarea" autosize/></van-cell-group></van-popup>
   <van-popup v-model:show="showGroup" position="bottom" round class="sheet"><van-nav-bar title="新建群聊" left-text="取消" right-text="创建" @click-left="showGroup=false" @click-right="createGroup"/><van-cell-group inset><van-field v-model="group.name" label="群名称" placeholder="请输入群聊名称"/><van-checkbox-group v-model="group.member_ids"><van-cell v-for="user in friends" :key="user.id" :title="user.display_name" clickable @click="group.member_ids.includes(user.id)?group.member_ids.splice(group.member_ids.indexOf(user.id),1):group.member_ids.push(user.id)"><template #right-icon><van-checkbox :name="user.id"/></template></van-cell></van-checkbox-group></van-cell-group></van-popup>

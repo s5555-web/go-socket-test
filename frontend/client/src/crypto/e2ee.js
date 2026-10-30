@@ -67,10 +67,10 @@ const E2EE=(()=>{
   async function aesForV1(publicJwk,conversationID){const bits=await classicSecret(publicJwk),base=await crypto.subtle.importKey('raw',bits,'HKDF',false,['deriveKey']);bits.fill(0);return crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:enc.encode('signal-web:'+conversationID),info:enc.encode('message-envelope-v1')},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
   async function aesForV2(publicJwk,pqSecret,conversationID){const ecdh=await classicSecret(publicJwk),combined=new Uint8Array(ecdh.length+pqSecret.length);combined.set(ecdh);combined.set(pqSecret,ecdh.length);const base=await crypto.subtle.importKey('raw',combined,'HKDF',false,['deriveKey']);ecdh.fill(0);combined.fill(0);return crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:enc.encode('signal-web:'+conversationID),info:enc.encode('message-envelope-v2-hybrid-mlkem768')},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
   function paddingBucket(size){const buckets=[512,1024,2048,4096,8192,16384,32768,65536,131072];for(const bucket of buckets)if(size+64<=bucket)return bucket;return Math.ceil((size+64)/32768)*32768}
-  function paddedContent(body,attachment,reply){const content={body,attachment,reply},empty=JSON.stringify({...content,pad:''}),target=paddingBucket(enc.encode(empty).length);let padBytes=Math.max(16,Math.floor((target-enc.encode(empty).length)*3/4)),serialized='';for(let attempts=0;attempts<4;attempts++){serialized=JSON.stringify({...content,pad:b64(crypto.getRandomValues(new Uint8Array(padBytes)))});const size=enc.encode(serialized).length;if(size>=target)break;padBytes+=Math.ceil((target-size)*3/4)}return enc.encode(serialized)}
-  async function encrypt(body,conversationID,members,attachment=null,reply=null){
+  function paddedContent(body,attachment,reply,mentions=[]){const content={body,attachment,reply,mentions},empty=JSON.stringify({...content,pad:''}),target=paddingBucket(enc.encode(empty).length);let padBytes=Math.max(16,Math.floor((target-enc.encode(empty).length)*3/4)),serialized='';for(let attempts=0;attempts<4;attempts++){serialized=JSON.stringify({...content,pad:b64(crypto.getRandomValues(new Uint8Array(padBytes)))});const size=enc.encode(serialized).length;if(size>=target)break;padBytes+=Math.ceil((target-size)*3/4)}return enc.encode(serialized)}
+  async function encrypt(body,conversationID,members,attachment=null,reply=null,mentions=[]){
     const missing=members.filter(member=>!member.public_key);if(missing.length)throw Error(`${missing.map(member=>member.display_name).join('、')} 尚未启用端到端加密`);
-    const clear=paddedContent(body,attachment,reply),recipients={},useHybrid=!!identity?.pq&&members.every(member=>member.pq_public_key);
+    const clear=paddedContent(body,attachment,reply,mentions),recipients={},useHybrid=!!identity?.pq&&members.every(member=>member.pq_public_key);
     for(const member of members){
       const iv=crypto.getRandomValues(new Uint8Array(12));
       if(useHybrid){
@@ -91,7 +91,7 @@ const E2EE=(()=>{
       if(env.v===2&&env.alg===PQ_ALG){if(!identity?.pq?.secretKey||!box.pq_ct)throw Error('missing post-quantum key');const pqSecret=PQ.decapsulate(un64(box.pq_ct),new Uint8Array(identity.pq.secretKey));key=await aesForV2(sender.public_key,pqSecret,conversationID);pqSecret.fill(0);aad=enc.encode(`v2:${conversationID}:${userID}`)}
       else if(env.v===1&&env.alg==='P256-HKDF-A256GCM'){key=await aesForV1(sender.public_key,conversationID);aad=enc.encode(`v1:${conversationID}:${userID}`)}
       else throw Error('unsupported envelope');
-      const clear=await crypto.subtle.decrypt({name:'AES-GCM',iv:un64(box.iv),additionalData:aad},key,un64(box.ct)),payload=JSON.parse(dec.decode(clear));return {body:payload.body||'',attachment:payload.attachment||null,reply:payload.reply||null};
+      const clear=await crypto.subtle.decrypt({name:'AES-GCM',iv:un64(box.iv),additionalData:aad},key,un64(box.ct)),payload=JSON.parse(dec.decode(clear));return {body:payload.body||'',attachment:payload.attachment||null,reply:payload.reply||null,mentions:Array.isArray(payload.mentions)?payload.mentions:[]};
     }catch{return {body:'🔒 解密失败（密钥可能已变更）',attachment:null,reply:null}}
   }
   async function memberKeyHash(member){const classic=member.public_key?JSON.stringify(JSON.parse(member.public_key)):'';const canonical=`${member.id}|${classic}|${member.pq_public_key||''}`;return b64(await crypto.subtle.digest('SHA-256',enc.encode(canonical)))}
