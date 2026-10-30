@@ -830,7 +830,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
         <div class="auth-actions"><van-button block round type="primary" native-type="submit" :loading="authBusy">{{ mode==='register'?'注册':'登录' }}</van-button><van-button block plain round type="primary" @click="mode=mode==='login'?'register':'login'">{{ mode==='login'?'没有账号？注册':'已有账号？登录' }}</van-button></div>
       </van-form>
       <p v-if="authError" class="error">{{ authError }}</p>
-      <div class="downloads"><a href="/downloads/SignalWeb-Windows-x64-v1.2.0.zip">Windows</a><a href="/downloads/SignalWeb-Android-v1.0.0.apk">Android</a><a href="/downloads/SignalWeb-iOS.mobileconfig">iPhone</a></div>
+      <div class="downloads"><a href="/downloads/SignalWeb-Windows-x64-v1.2.1.zip">Windows</a><a href="/downloads/SignalWeb-Android-v1.0.0.apk">Android</a><a href="/downloads/SignalWeb-iOS.mobileconfig">iPhone</a></div>
     </section>
   </div>
 

@@ -45,3 +45,13 @@ Nginx：`/etc/nginx/sites-enabled/signal-web`，转发 `127.0.0.1:1802`。
 ## 所有模式移除对话框返回按钮
 
 按后续要求，普通聊天与客服对话框均移除头部返回按钮以及手机浏览器列表按钮，不再区分浏览器、安装模式和桌面客户端。前端构建通过，Service Worker v32。发布目录 `/opt/signal-web/releases/remove-chat-back-20261030`，更新前备份 `/opt/signal-web/backups/client-before-remove-chat-back-20261030.tgz`。
+
+## Windows 启动白屏恢复（v1.2.1）
+
+用户反馈启动后直接空白。线上浏览器登录界面正常，检查已发布 v1.2.0 的 app.asar，确认与仓库一致，旧桌面壳只调用 loadURL，没有启动失败恢复或错误界面。尚未获得用户 Windows 日志，不能断言其具体失败原因。
+
+v1.2.1 增加本地启动界面、25 秒超时、空 Vue 根节点检测、网络失败或渲染进程退出后的单次缓存恢复重试；失败后展示重试与诊断日志入口。仅清理 HTTP、Service Worker 和 Cache Storage 缓存，不清理 Cookie、IndexedDB、localStorage 或本地加密历史。诊断日志不记录消息、凭证或完整 URL。
+
+23 项自动化测试通过，前端构建通过。使用原 v1.2.0 Windows 包替换 app.asar 生成 v1.2.1，逐项核对其他文件 CRC 不变并检查 ZIP 完整性；未在真实 Windows 环境启动验收。
+下载 `/downloads/SignalWeb-Windows-x64-v1.2.1.zip`，SHA-256 `4b75487d9239194ae3626c51449f2fc52a64b7999985d6ae4e2f3763f8622737`。服务器 HTTPS 下载探测返回 206 application/zip。
+前端发布 `/opt/signal-web/releases/windows-startup-20261030`，备份 `/opt/signal-web/backups/client-before-windows-startup-20261030.tgz`，首页引用 `index-BbqbO8yx.js`，健康检查正常。旧桌面壳需下载新版程序以获得启动恢复功能。

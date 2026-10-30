@@ -1,5 +1,7 @@
 const{contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('signalDesktop',{
+  retryLoad:()=>ipcRenderer.invoke('startup:retry'),
+  openDiagnostics:()=>ipcRenderer.invoke('startup:logs'),
   setBadge:(count,dataUrl)=>ipcRenderer.send('signal-badge',{count,dataUrl}),
   history:{
     put:input=>ipcRenderer.invoke('history:put',input),
