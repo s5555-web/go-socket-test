@@ -55,3 +55,7 @@ v1.2.1 增加本地启动界面、25 秒超时、空 Vue 根节点检测、网�
 23 项自动化测试通过，前端构建通过。使用原 v1.2.0 Windows 包替换 app.asar 生成 v1.2.1，逐项核对其他文件 CRC 不变并检查 ZIP 完整性；未在真实 Windows 环境启动验收。
 下载 `/downloads/SignalWeb-Windows-x64-v1.2.1.zip`，SHA-256 `4b75487d9239194ae3626c51449f2fc52a64b7999985d6ae4e2f3763f8622737`。服务器 HTTPS 下载探测返回 206 application/zip。
 前端发布 `/opt/signal-web/releases/windows-startup-20261030`，备份 `/opt/signal-web/backups/client-before-windows-startup-20261030.tgz`，首页引用 `index-BbqbO8yx.js`，健康检查正常。旧桌面壳需下载新版程序以获得启动恢复功能。
+
+## 图片缩略图和关闭大图
+
+消息图片限制在 100×100 像素区域，使用 contain 保持比例并显示全图。预览显式开启点击图片关闭和点击遮罩关闭，关闭双击缩放等待，使单击直接关闭。生产构建与差异格式检查通过。Service Worker v34。

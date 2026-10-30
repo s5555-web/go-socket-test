@@ -925,7 +925,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
               <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
               <van-tag v-if="entry.payload.mentions?.some(member => Number(member.id)===Number(me.id))" type="primary">@我</van-tag>
               <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
-              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
+              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="contain" radius="10" @click="showImagePreview({ images: [entry.imageUrl], closeOnClickImage: true, closeOnClickOverlay: true, doubleScale: false })" />
               <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
               <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry, $event)" />
             </article>
