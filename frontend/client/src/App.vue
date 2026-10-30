@@ -1,10 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { showConfirmDialog, showFailToast, showImagePreview, showSuccessToast, showToast } from 'vant'
+import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'vant'
 import { createLocalHistory } from './history.js'
 import E2EE from './crypto/e2ee.js'
 import { mentionAt, insertMention, sentMentions } from './mentions.js'
 import ContextMenu from './ContextMenu.vue'
+import ImagePreview from './ImagePreview.vue'
 
 const token = ref(localStorage.token || '')
 const me = ref(null)
@@ -63,6 +64,7 @@ const imageDraftURL = ref('')
 const messagesBox = ref(null)
 const supportMessagesBox = ref(null)
 const imageInput = ref(null)
+const previewImage = ref('')
 const showEmoji = ref(false)
 const emojiCategory = ref('最近')
 const showFriendSearch = ref(false)
@@ -234,7 +236,7 @@ async function relationshipAction(user) {
   await searchUsers()
 }
 
-function revokeImages() { for (const url of objectURLs) URL.revokeObjectURL(url); objectURLs.clear() }
+function revokeImages() { previewImage.value = '';  for (const url of objectURLs) URL.revokeObjectURL(url); objectURLs.clear() }
 async function decryptMessages(rawMessages, revision = roomRevision) {
   const room = activeId.value
   const existing = new Map(entries.value.map(entry => [String(entry.message.id), entry]))
@@ -925,7 +927,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
               <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
               <van-tag v-if="entry.payload.mentions?.some(member => Number(member.id)===Number(me.id))" type="primary">@我</van-tag>
               <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
-              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="contain" radius="10" @click="showImagePreview({ images: [entry.imageUrl], closeOnClickImage: true, closeOnClickOverlay: true, doubleScale: false })" />
+              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="contain" radius="10" @click="previewImage=entry.imageUrl" />
               <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
               <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry, $event)" />
             </article>
@@ -951,6 +953,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
     </section>
   </main>
 
+  <ImagePreview v-if="previewImage" :src="previewImage" @close="previewImage=''" />
   <van-popup v-model:show="showMembers" position="right" class="members-sheet"><van-nav-bar :title="`群成员（${groupMembers.length}）`" right-text="关闭" @click-right="showMembers=false"/><van-search v-model="memberQuery" placeholder="搜索群成员"/><p v-if="membersBusy" class="members-hint">正在更新成员…</p><van-cell v-for="member in visibleGroupMembers" :key="member.id" :title="member.display_name" :label="member.id===me?.id?'我':`成员 ID：${member.id}`"><template #right-icon><van-button v-if="member.id!==me?.id" size="small" plain type="primary" @click="mentionGroupMember(member)">@ 提及</van-button></template></van-cell><van-empty v-if="!visibleGroupMembers.length&&!membersBusy" description="没有匹配的成员"/></van-popup>
   <van-popup v-model:show="showFriendSearch" position="bottom" round class="sheet"><van-nav-bar title="添加好友" left-text="关闭" @click-left="showFriendSearch=false"/><van-search v-model="friendQuery" autofocus placeholder="搜索用户名或昵称"/><van-cell v-for="user in userResults" :key="user.id" :title="user.display_name" :label="`@${user.username}`"><template #right-icon><van-button size="small" type="primary" @click="relationshipAction(user)">{{ {none:'添加',outgoing:'取消申请',incoming:'去确认',friend:'发消息'}[user.relationship] }}</van-button></template></van-cell><van-empty v-if="friendQuery&&!userResults.length" description="没有找到用户"/></van-popup>
   <van-popup v-model:show="showProfile" position="bottom" round class="sheet"><van-nav-bar title="个人资料" left-text="取消" right-text="保存" @click-left="showProfile=false" @click-right="saveProfile"/><van-cell-group inset><van-field :model-value="`@${me?.username||''}`" label="用户名" readonly/><van-field v-model="profile.display_name" label="昵称" maxlength="80"/><van-field v-model="profile.about" label="个人简介" maxlength="160" type="textarea" autosize/></van-cell-group></van-popup>
