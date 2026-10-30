@@ -10,7 +10,7 @@ test('decrypted image and download errors update the rendered entry', async () =
   const entries = ref([])
   let downloadOK = true
   const context = vm.createContext({
-    reactive, entries, activeId: ref(1), me: ref({ id: 2 }), members: ref([]), token: ref('test'),
+    roomSessions: new Map(), reactive, entries, activeId: ref(1), me: ref({ id: 2 }), members: ref([]), token: ref('test'),
     E2EE: { decryptPayload: async () => ({ attachment: { id: 'image', size: 3, mime: 'image/png' } }), decryptAttachment: async () => new Uint8Array(3) },
     fetch: async () => ({ ok: downloadOK, arrayBuffer: async () => new ArrayBuffer(3) }),
     URL: { createObjectURL: () => 'blob:decrypted' }, Blob, objectURLs: new Set(),
@@ -90,4 +90,107 @@ test('support decryption does not retain display plaintext if hidden or switched
   pending=context.decryptSupportMessages([{id:1,thread_id:7,body:'cipher'}])
   supportActive.value=8;resolve('private message')
   assert.equal((await pending).length,0)
+})
+
+test('silent history merge reuses existing image nodes and keeps socket deliveries', async () => {
+  let finish, calls = 0
+  const first = reactive({ message: { id: 1, body: 'cipher', conversation_id: 7 }, payload: {}, imageUrl: 'blob:cached' })
+  const entries = ref([first])
+  const context = vm.createContext({
+    reactive, entries, activeId: ref(7), me: ref({id:1}), members: ref([]), document: {hidden:false},
+    roomSessions: new Map(), roomRevision: 1,
+    historyStore: {sortKey: message => String(message.id).padStart(5,'0')},
+    E2EE: {decryptPayload: () => {calls++;return new Promise(resolve => {finish=resolve})}},
+    loadEntryImage: () => assert.fail('cached images must not be downloaded again')
+  })
+  vm.runInContext(section('async function decryptMessages(', 'async function loadEntryImage('), context)
+  const pending = context.decryptMessages([first.message, {id:2,body:'new',conversation_id:7}])
+  const socketEntry = reactive({message:{id:3,body:'socket',conversation_id:7},payload:{}})
+  entries.value.push(socketEntry)
+  finish({body:'new message'})
+  await pending
+  assert.equal(calls,1)
+  assert.equal(entries.value[0],first)
+  assert.equal(entries.value[2],socketEntry)
+  assert.deepEqual(Array.from(entries.value,entry=>entry.message.id),[1,2,3])
+})
+
+test('stale history decryption cannot populate a newer room selection', async () => {
+  let finish
+  const entries=ref([])
+  const context=vm.createContext({reactive,entries,activeId:ref(7),me:ref({id:1}),members:ref([]),document:{hidden:false},roomRevision:1,
+    E2EE:{decryptPayload:()=>new Promise(resolve=>{finish=resolve})}})
+  vm.runInContext(section('async function decryptMessages(', 'async function loadEntryImage('),context)
+  const pending=context.decryptMessages([{id:1,body:'cipher',conversation_id:7}])
+  context.roomRevision=2
+  finish({body:'old selection'})
+  await pending
+  assert.equal(entries.value.length,0)
+})
+
+test('support cache persists ciphertext only and merges duplicate messages by id', () => {
+  const data=new Map(),supportMessages=ref([])
+  const context=vm.createContext({me:ref({id:5}),supportMessages,localStorage:{getItem:key=>data.get(key),setItem:(key,value)=>data.set(key,value)}})
+  vm.runInContext(section('function supportCacheKey(', 'async function openSupport('),context)
+  const message={id:1,thread_id:7,body:JSON.stringify({alg:'encrypted',recipients:{}}),displayBody:'SECRET',created_at:'2026-10-30T00:00:00Z'}
+  context.cacheSupport(7,[message,message])
+  assert.equal([...data.values()].join('').includes('SECRET'),false)
+  assert.equal(context.readSupportCache(7).length,1)
+  context.mergeSupport([message,message])
+  assert.equal(supportMessages.value.length,1)
+})
+
+test('reopening the current room keeps history visible while network sync is pending', async () => {
+  let finishMembers
+  const entry=reactive({message:{id:1,conversation_id:7,body:'cipher'},payload:{body:'cached'}})
+  const entries=ref([entry]),memberList=[{id:1,public_key:'public'}]
+  const context=vm.createContext({
+    reactive,entries,activeId:ref(7),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
+    members:ref(memberList),me:ref({id:1}),roomRevision:0,roomSessions:new Map(),memberSessions:new Map([[7,memberList]]),
+    historyCursor:ref(''),historyDone:ref(false),messagesBox:ref(null),document:{hidden:false},console,
+    localStorage:{getItem:()=>null,setItem(){}},historyStore:{PAGE:40,page:async()=>[{sort:'1',message:entry.message}],markRead:async()=>{}},
+    decryptMessages:async()=>{},nextTick:async()=>{},scrollBottom(){},loadChats:async()=>{},
+    E2EE:{changedMemberKeys:async()=>[]},
+    api:path=>path.endsWith('/members')?new Promise(resolve=>{finishMembers=resolve}):Promise.resolve([])
+  })
+  vm.runInContext(section('async function openRoom(', '\nasync function loadOlder()'),context)
+  const pending=context.openRoom(7)
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(entries.value[0],entry)
+  finishMembers(memberList)
+  await pending
+  assert.equal(entries.value[0],entry)
+})
+
+for (const cached of [false, true]) test(`opening ${cached?'cached':'remote-only'} history positions at bottom after messages render`, async () => {
+  const message={id:1,conversation_id:7,body:'cipher'},entries=ref([])
+  let records=[],scrolls=0
+  const context=vm.createContext({
+    reactive,entries,activeId:ref(0),activeView:ref('chats'),settingsMobileOpen:ref(false),supportActive:ref(0),
+    members:ref([]),me:ref({id:1}),roomRevision:0,stickToLatest:true,
+    roomSessions:new Map(cached?[[7,[{message,payload:{body:'cached'}}]]]:[]),memberSessions:new Map(),
+    historyCursor:ref(''),historyDone:ref(false),messagesBox:ref({scrollHeight:1200,scrollTop:0,clientHeight:300}),document:{hidden:false},console,
+    localStorage:{getItem:()=>null,setItem(){}},
+    historyStore:{PAGE:40,page:async()=>records,markRead:async()=>{},put:async message=>{records=[{sort:'1',message}]}},
+    decryptMessages:async messages=>{if(messages.length)entries.value=messages.map(message=>({message,payload:{}}))},
+    nextTick:async()=>{},scrollBottom(){assert.ok(entries.value.length);scrolls++},loadChats:async()=>{},
+    E2EE:{changedMemberKeys:async()=>[]},
+    api:async path=>path.endsWith('/members')?[{id:1,public_key:'public'}]:path.endsWith('/messages')?[message]:[]
+  })
+  vm.runInContext(section('async function openRoom(', '\nasync function loadOlder()'),context)
+  await context.openRoom(7)
+  assert.ok(scrolls>0,'newly opened conversation must scroll even when initial cache is empty or already restored')
+})
+
+test('image layout follows bottom until the user scrolls away',async()=>{
+  let scrolls=0
+  const box={scrollHeight:1500,scrollTop:1200,clientHeight:300}
+  const context=vm.createContext({stickToLatest:true,messagesBox:ref(box),activeId:ref(7),nextTick:async()=>{},loadOlder:async()=>{},showFailToast(){}})
+  vm.runInContext(section('function onMessageScroll()', 'function scrollSupportBottom()'),context)
+  await context.onMessageImageLoad({message:{conversation_id:7}})
+  assert.equal(box.scrollTop,1500)
+  box.scrollTop=500
+  context.onMessageScroll()
+  await context.onMessageImageLoad({message:{conversation_id:7}})
+  assert.equal(box.scrollTop,500)
 })

@@ -30,6 +30,11 @@ let storedPreferences = {}
 try { storedPreferences = JSON.parse(localStorage.signalChatPreferences || '{}') } catch {}
 const preferences = reactive({ keepMutedArchived: false, spellcheck: true, emojiConvert: true, linkPreview: true, readReceipts: true, typingIndicators: true, ...storedPreferences })
 const entries = ref([])
+const roomSessions = new Map()
+const memberSessions = new Map()
+let stickToLatest = true
+let roomRevision = 0
+let supportRevision = 0
 const historyCursor = ref('')
 const historyDone = ref(false)
 const historyLoading = ref(false)
@@ -216,18 +221,25 @@ async function relationshipAction(user) {
 }
 
 function revokeImages() { for (const url of objectURLs) URL.revokeObjectURL(url); objectURLs.clear() }
-async function decryptMessages(rawMessages) {
+async function decryptMessages(rawMessages, revision = roomRevision) {
   const room = activeId.value
-  revokeImages()
+  const existing = new Map(entries.value.map(entry => [String(entry.message.id), entry]))
   const result = []
   for (const message of rawMessages) {
-    const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
-    const entry = reactive({ message, payload, imageUrl: '', imageError: '' })
-    if (activeId.value !== room || document.hidden) return
+    let entry = existing.get(String(message.id))
+    if (!entry || entry.message.body !== message.body) {
+      const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
+      entry = reactive({ message, payload, imageUrl: '', imageError: '' })
+    }
+    if (activeId.value !== room || revision !== roomRevision || document.hidden) return
     result.push(entry)
-    if (payload.attachment) loadEntryImage(entry)
   }
-  if (activeId.value === room && !document.hidden) entries.value = result
+  if (activeId.value !== room || revision !== roomRevision || document.hidden) return
+  // Keep messages delivered by the socket while history was decrypting.
+  const merged = new Map([...entries.value, ...result].map(entry => [String(entry.message.id), entry]))
+  entries.value = [...merged.values()].sort((a, b) => historyStore.sortKey(a.message).localeCompare(historyStore.sortKey(b.message)))
+  roomSessions.set(room, entries.value)
+  for (const entry of result) if (entry.payload.attachment && !entry.imageUrl && !entry.imageError) loadEntryImage(entry)
 }
 async function loadEntryImage(entry) {
   try {
@@ -243,68 +255,128 @@ async function loadEntryImage(entry) {
 }
 
 async function openRoom(id) {
+  const sameRoom = activeId.value === id
+  const revision = ++roomRevision
   activeView.value = 'chats'
   settingsMobileOpen.value = false
+  if (!sameRoom && activeId.value) roomSessions.set(activeId.value, entries.value)
   activeId.value = id
   supportActive.value = 0
-  entries.value = []
-  members.value = await api(`/conversations/${id}/members`)
-  if (activeId.value !== id) return
-  const changed = await E2EE.changedMemberKeys(members.value)
+  if (!sameRoom) entries.value = roomSessions.get(id) || []
+  const current = () => activeId.value === id && roomRevision === revision && !document.hidden
+  let savedMembers = []
+  try { savedMembers = JSON.parse(localStorage.getItem(`signalMembers:${me.value.id}:${id}`) || '[]') } catch {}
+  members.value = memberSessions.get(id) || (Array.isArray(savedMembers) ? savedMembers : [])
+  let positioned = sameRoom && entries.value.length > 0
+  if (!positioned) stickToLatest = true
+  const showLocal = async () => {
+    const page = await historyStore.page(id)
+    if (!current()) return
+    historyCursor.value = page[0]?.sort || ''
+    historyDone.value = page.length < historyStore.PAGE
+    await decryptMessages(page.map(item => item.message), revision)
+    if (!positioned && entries.value.length && current()) {
+      await nextTick()
+      if (!current()) return
+      scrollBottom()
+      positioned = true
+    }
+  }
+  // Previously trusted members allow local history to render without a network wait.
+  if (members.value.length) await showLocal()
+  if (!current()) return
+  const roomMembers = await api(`/conversations/${id}/members`).catch(error => {
+    if (!entries.value.length) throw error
+    console.warn('会话将在网络恢复后同步', error)
+    return null
+  })
+  if (!roomMembers) return
+  if (!current()) return
+  const changed = await E2EE.changedMemberKeys(roomMembers)
   if (changed.length) {
     try { await showConfirmDialog({ title: '安全密钥已改变', message: `${changed.map(item => item.display_name).join('、')} 的密钥发生变化。确认继续信任此新密钥？` }) }
     catch { activeId.value = 0; return }
+    if (!current()) return
     await E2EE.trustMemberKeys(changed)
   }
+  members.value = roomMembers
+  memberSessions.set(id, roomMembers)
+  try { localStorage.setItem(`signalMembers:${me.value.id}:${id}`, JSON.stringify(roomMembers.map(({id, display_name, public_key, pq_public_key}) => ({id, display_name, public_key, pq_public_key})))) } catch {}
+  await showLocal()
   await historyStore.markRead(id)
-  await api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
-  const remote = await api(`/conversations/${id}/messages`)
-  for (const message of remote) await historyStore.put(message, true)
-  const page = await historyStore.page(id)
-  historyCursor.value = page[0]?.sort || ''
-  historyDone.value = page.length < historyStore.PAGE
-  await decryptMessages(page.map(item => item.message))
+  api(`/conversations/${id}/read`, { method: 'POST' }).catch(() => {})
+  const remote = await api(`/conversations/${id}/messages`).catch(error => {
+    if (!entries.value.length) throw error
+    console.warn('历史记录将在网络恢复后同步', error)
+    return null
+  })
+  if (!remote || !current()) return
+  for (const message of remote) { if (!current()) return; await historyStore.put(message, true) }
+  if (!current()) return
+  const nearBottom = !messagesBox.value || messagesBox.value.scrollHeight - messagesBox.value.scrollTop - messagesBox.value.clientHeight < 80
+  const count = entries.value.length
+  await showLocal()
   await loadChats()
-  await nextTick(); scrollBottom()
+  if (current() && nearBottom && entries.value.length !== count) { await nextTick(); scrollBottom() }
 }
 
 async function loadOlder() {
   if (historyLoading.value || historyDone.value || !activeId.value) return
   historyLoading.value = true
   const room = activeId.value
+  const revision = roomRevision
+  const roomMembers = members.value
+  const cursor = historyCursor.value
+  try {
   const oldHeight = messagesBox.value?.scrollHeight || 0
   const beforeID = entries.value[0]?.message.id || ''
-  const remote = await api(`/conversations/${activeId.value}/messages?before=${beforeID}`)
+  const remote = await api(`/conversations/${room}/messages?before=${beforeID}`)
   for (const message of remote) await historyStore.put(message, true)
-  const page = await historyStore.page(activeId.value, historyCursor.value)
+  if (activeId.value !== room || revision !== roomRevision) return
+  const page = await historyStore.page(room, cursor)
   if (page.length) {
     historyCursor.value = page[0].sort
     const old = entries.value
     const payloads = []
     for (const item of page) {
-      const payload = await E2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, members.value, item.message.sender_id)
+      const payload = await E2EE.decryptPayload(item.message.body, item.message.conversation_id, me.value.id, roomMembers, item.message.sender_id)
       payloads.push(reactive({ message: item.message, payload, imageUrl: '', imageError: '' }))
     }
-    if (activeId.value !== room || document.hidden) { historyLoading.value = false; return }
+    if (activeId.value !== room || revision !== roomRevision || document.hidden) return
     entries.value = [...payloads, ...old]
     for (const item of payloads) if (item.payload.attachment) loadEntryImage(item)
     historyDone.value = page.length < historyStore.PAGE
     await nextTick(); if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight - oldHeight
   } else historyDone.value = true
-  historyLoading.value = false
+  } finally { historyLoading.value = false }
 }
-function onMessageScroll() { if ((messagesBox.value?.scrollTop || 0) < 48) loadOlder().catch(error => showFailToast(error.message)) }
-function scrollBottom() { if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight }
+function onMessageScroll() {
+  const box = messagesBox.value
+  if (!box) return
+  stickToLatest = box.scrollHeight - box.scrollTop - box.clientHeight < 80
+  if (!stickToLatest && box.scrollTop < 48) loadOlder().catch(error => showFailToast(error.message))
+}
+function scrollBottom() {
+  stickToLatest = true
+  if (messagesBox.value) messagesBox.value.scrollTop = messagesBox.value.scrollHeight
+}
+async function onMessageImageLoad(entry) {
+  if (!stickToLatest || activeId.value !== entry.message.conversation_id) return
+  await nextTick()
+  if (stickToLatest && activeId.value === entry.message.conversation_id) scrollBottom()
+}
 function scrollSupportBottom() { if (supportMessagesBox.value) supportMessagesBox.value.scrollTop = supportMessagesBox.value.scrollHeight }
 
 async function addMessage(message, persist = true) {
   const active = activeId.value === message.conversation_id && !document.hidden
   if (persist) await historyStore.put(message, active && !document.hidden)
+  if (!active) roomSessions.delete(message.conversation_id)
   if (!active || entries.value.some(item => Number(item.message.id) === Number(message.id))) return
   const payload = await E2EE.decryptPayload(message.body, message.conversation_id, me.value.id, members.value, message.sender_id)
   if (activeId.value !== message.conversation_id || document.hidden) return
   const entry = reactive({ message, payload, imageUrl: '', imageError: '' })
   entries.value.push(entry)
+  roomSessions.set(message.conversation_id, entries.value)
   if (payload.attachment) loadEntryImage(entry)
   await nextTick(); scrollBottom()
 }
@@ -386,7 +458,7 @@ function replyMessage(entry) { replyDraft.value = { message_id: Number(entry.mes
 async function deleteMessage(entry, all) {
   try { await showConfirmDialog({ title: all ? '撤回消息' : '删除消息', message: all ? '在线设备将同步删除本地副本。' : '只从当前设备删除，其他成员仍可看到。' }) } catch { return }
   if (all) { const query = new URLSearchParams({ scope: 'all' }); if (entry.payload.attachment?.id) query.set('attachment', entry.payload.attachment.id); await api(`/conversations/${entry.message.conversation_id}/messages/${entry.message.id}?${query}`, { method: 'DELETE' }) }
-  await historyStore.delete(entry.message); entries.value = entries.value.filter(item => item !== entry); await loadChats(); notify(all ? '消息已撤回' : '已从本机删除')
+  roomRevision++; roomSessions.delete(entry.message.conversation_id); await historyStore.delete(entry.message); entries.value = entries.value.filter(item => item !== entry); await loadChats(); notify(all ? '消息已撤回' : '已从本机删除')
 }
 async function forwardMessage(conversationID) {
   const entry = forwardEntry.value; if (!entry || forwarding.value) return
@@ -419,7 +491,7 @@ async function conversationAction(action, seconds = 0) {
 }
 async function clearConversation(id) {
   try { await showConfirmDialog({ title: '清除双方记录', message: '在线设备立即清除；离线设备下次连接服务器后自动清除。' }) } catch { return }
-  await api(`/conversations/${id}/messages`, { method: 'DELETE' }); await historyStore.clear(id); if (activeId.value === id) entries.value = []; await loadChats(); notify('清除指令已同步')
+  await api(`/conversations/${id}/messages`, { method: 'DELETE' }); if (activeId.value === id) roomRevision++; roomSessions.delete(id); await historyStore.clear(id); if (activeId.value === id) entries.value = []; await loadChats(); notify('清除指令已同步')
 }
 async function deleteConversation(id) {
   try { await showConfirmDialog({ title: '删除对话', message: '确定从会话列表中删除？' }) } catch { return }
@@ -448,9 +520,14 @@ async function fetchSupport() {
 	supportThreads.value = await api('/support/threads')
 	if (!supportActive.value || document.hidden) return
 	const latestID = supportMessages.value.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0)
-	const incoming = await api(`/support/threads/${supportActive.value}/messages?after=${latestID}`)
+	const threadID = supportActive.value
+	const revision = supportRevision
+	const incoming = await api(`/support/threads/${threadID}/messages?after=${latestID}`)
+	cacheSupport(threadID, incoming)
+	if (supportActive.value !== threadID || revision !== supportRevision || document.hidden) return
 	const existing = new Set(supportMessages.value.map(item => Number(item.id)))
-	supportMessages.value.push(...await decryptSupportMessages(incoming.filter(item => !existing.has(Number(item.id)))))
+	const rendered = await decryptSupportMessages(incoming.filter(item => !existing.has(Number(item.id))))
+	if (supportActive.value === threadID && revision === supportRevision) mergeSupport(rendered)
 }
 function updateSupportPolling() {
   clearInterval(supportTimer)
@@ -481,14 +558,48 @@ async function decryptSupportMessages(messages) {
   const rendered = await Promise.all(messages.map(async message => ({ ...message, displayBody: await E2EE.decryptSupport(message.body, message.thread_id, me.value.id) })))
   return !document.hidden && rendered.every(message => Number(message.thread_id) === Number(supportActive.value)) ? rendered : []
 }
+function supportCacheKey(id) { return `signalSupportHistory:${me.value.id}:${id}` }
+function readSupportCache(id) {
+  try { const records = JSON.parse(localStorage.getItem(supportCacheKey(id)) || '[]'); return Array.isArray(records) ? records : [] } catch { return [] }
+}
+function cacheSupport(id, messages) {
+  const merged = new Map(readSupportCache(id).map(message => [String(message.id), message]))
+  for (const message of messages) {
+    try {
+      const envelope = JSON.parse(message.body)
+      if (!envelope.recipients || !envelope.alg) continue
+      const { id, thread_id, body, sender_name, sender_type, created_at } = message
+      merged.set(String(id), { id, thread_id, body, sender_name, sender_type, created_at })
+    } catch {}
+  }
+  try { localStorage.setItem(supportCacheKey(id), JSON.stringify([...merged.values()].sort((a,b) => Number(a.id)-Number(b.id)).slice(-300))) } catch {}
+}
+function mergeSupport(messages) {
+  const merged = new Map([...supportMessages.value, ...messages].map(message => [String(message.id), message]))
+  supportMessages.value = [...merged.values()].sort((a,b) => Number(a.id)-Number(b.id))
+}
 async function openSupport(id) {
-  activeId.value = 0; entries.value = []; revokeImages(); supportMessages.value = []
+  const sameThread = supportActive.value === id
+  const revision = ++supportRevision
+  activeId.value = 0; entries.value = []
+  if (!sameThread) supportMessages.value = []
   supportActive.value = id; supportUnread.value = { ...supportUnread.value, [id]: 0 }
+  const current = () => supportActive.value === id && revision === supportRevision && !document.hidden
+  if (!supportMessages.value.length) {
+    const cached = await decryptSupportMessages(readSupportCache(id))
+    if (!current()) return
+    mergeSupport(cached)
+    await nextTick(); scrollSupportBottom()
+  }
   const messages = await api(`/support/threads/${id}/messages`)
-  if (supportActive.value !== id) return
-  const rendered = await decryptSupportMessages(messages)
-  if (supportActive.value === id && !document.hidden) supportMessages.value = rendered
-  await nextTick(); scrollSupportBottom()
+  cacheSupport(id, messages)
+  if (!current()) return
+  const existing = new Set(supportMessages.value.map(message => String(message.id)))
+  const rendered = await decryptSupportMessages(messages.filter(message => !existing.has(String(message.id))))
+  if (!current()) return
+  const nearBottom = !supportMessagesBox.value || supportMessagesBox.value.scrollHeight - supportMessagesBox.value.scrollTop - supportMessagesBox.value.clientHeight < 80
+  mergeSupport(rendered)
+  if (nearBottom && rendered.length) { await nextTick(); scrollSupportBottom() }
 }
 async function sendSupport() {
   const clear = supportComposer.value.trim(), id = supportActive.value
@@ -498,7 +609,8 @@ async function sendSupport() {
     const members = await api(`/support/threads/${id}/members`)
     const body = await globalThis.SignalSupportCrypto.encrypt(clear, id, members)
     const message = await api(`/support/threads/${id}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
-    if (supportActive.value === id && !document.hidden) supportMessages.value.push(...await decryptSupportMessages([message]))
+    cacheSupport(id, [message])
+    if (supportActive.value === id && !document.hidden) mergeSupport(await decryptSupportMessages([message]))
     supportComposer.value = ''; await refreshSupport(); await nextTick(); scrollSupportBottom()
   } finally { supportBusy.value = false }
 }
@@ -507,7 +619,6 @@ async function toggleSupportStatus() { const thread = activeSupportThread.value;
 async function notifySupportIncoming(thread, message) {
 	const name = thread?.visitor_name || message.sender_name || '访客'
 	const body = '你收到一条加密客服消息'
-	showToast({ message: `${name}：${body}`, duration: 3500 })
 	if (!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return
 	try {
 		const registration = await navigator.serviceWorker.ready
@@ -516,19 +627,18 @@ async function notifySupportIncoming(thread, message) {
 }
 
 async function ackMessage(id) { await api(`/messages/${id}/ack`, { method: 'POST' }) }
-async function applyClear(event) { await historyStore.clear(event.conversation_id); if (activeId.value === event.conversation_id) entries.value = []; if (event.event_id) await api(`/conversation-clears/${event.event_id}/ack`, { method: 'POST' }) }
+async function applyClear(event) { if (activeId.value === event.conversation_id) roomRevision++; roomSessions.delete(event.conversation_id); await historyStore.clear(event.conversation_id); if (activeId.value === event.conversation_id) entries.value = []; if (event.event_id) await api(`/conversation-clears/${event.event_id}/ack`, { method: 'POST' }) }
 async function syncOffline() {
   let cleared = 0
   for (let page = 0; page < 20; page++) { const events = await api('/conversation-clears/pending'); if (!events.length) break; for (const event of events) { await applyClear(event); cleared++ } if (events.length < 100) break }
   let received = 0
   for (let page = 0; page < 20; page++) { const messages = await api('/messages/pending'); if (!messages.length) break; for (const message of messages) { await historyStore.put(message, activeId.value === message.conversation_id && !document.hidden); await ackMessage(message.id); received++ } if (messages.length < 100) break }
-  if (received || cleared) { await loadChats(); if (activeId.value) await openRoom(activeId.value); notify(received ? `已接收 ${received} 条离线消息` : `已同步 ${cleared} 个清除指令`) }
+  if (received || cleared) { await loadChats(); if (activeId.value) await openRoom(activeId.value); if (!received && cleared) notify(`已同步 ${cleared} 个清除指令`) }
 }
 async function notifyIncoming(message) {
   if (message.sender_id === me.value.id || (!document.hidden && activeId.value === message.conversation_id)) return
   try {
     const body = '你收到一条加密消息'
-    showToast(`${message.sender_name}：${body}`)
     if ('Notification' in window && Notification.permission === 'granted') {
       const registration = await navigator.serviceWorker.ready
       await registration.showNotification(message.sender_name, { body, tag: `conversation-${message.conversation_id}`, icon: '/assets/icon.svg', data: { url: `/?conversation=${message.conversation_id}`, conversation_id: message.conversation_id } })
@@ -541,10 +651,11 @@ async function handleSocketEvent(event) {
 	else if (event.type === 'friendship') { await loadFriends(); notify('好友列表已更新') }
 	else if (event.type === 'support_message') {
 		const threadID = Number(event.thread_id)
+		cacheSupport(threadID, [event.data])
 		await refreshSupport()
 		const thread = supportThreads.value.find(item => Number(item.id) === threadID)
 		if (supportActive.value === threadID && !document.hidden) {
-			if (!supportMessages.value.some(item => Number(item.id) === Number(event.data.id))) supportMessages.value.push(...await decryptSupportMessages([event.data]))
+			if (!supportMessages.value.some(item => Number(item.id) === Number(event.data.id))) mergeSupport(await decryptSupportMessages([event.data]))
 			await nextTick(); scrollSupportBottom()
 		} else supportUnread.value = { ...supportUnread.value, [threadID]: (supportUnread.value[threadID] || 0) + 1 }
 		await notifySupportIncoming(thread, event.data)
@@ -552,7 +663,7 @@ async function handleSocketEvent(event) {
 	else if (event.type === 'support_role') { await applySupportRole(event.is_support); notify(event.is_support ? '客服权限已启用' : '客服权限已取消') }
   else if (event.type === 'conversation') {
     if (event.action === 'cleared') await applyClear(event)
-    else if (event.action === 'message_deleted' && event.scope === 'all') { await historyStore.deleteIfSender(event.conversation_id, event.message_id, event.actor_id); entries.value = entries.value.filter(item => Number(item.message.id) !== Number(event.message_id)) }
+    else if (event.action === 'message_deleted' && event.scope === 'all') { if (activeId.value === event.conversation_id) roomRevision++; roomSessions.delete(event.conversation_id); await historyStore.deleteIfSender(event.conversation_id, event.message_id, event.actor_id); entries.value = entries.value.filter(item => Number(item.message.id) !== Number(event.message_id)) }
     await loadChats()
   }
 }
@@ -617,10 +728,10 @@ async function enableNotifications() { if (!('Notification' in window) || !('ser
 async function installApp() { if (installPrompt.value) { await installPrompt.value.prompt(); installPrompt.value = null } else showToast(/iPhone|iPad/.test(navigator.userAgent) ? '请使用“分享 → 添加到主屏幕”' : '请使用浏览器菜单安装应用') }
 
 watch(friendQuery, () => { clearTimeout(friendSearchTimer); friendSearchTimer = setTimeout(() => searchUsers().catch(error => showFailToast(error.message)), 220) })
-watch(activeView, view => { if (view === 'support') refreshSupport(); else { supportMessages.value = []; supportActive.value = 0 } if (view !== 'chats') { entries.value = []; revokeImages() } })
+watch(activeView, view => { if (view === 'support') refreshSupport(); else { supportMessages.value = []; supportActive.value = 0 } if (view !== 'chats') { roomSessions.clear(); entries.value = []; revokeImages() } })
 watch(supportActive, id => { if (!id) supportMessages.value = [] })
-watch(activeId, id => { if (!id) { entries.value = []; revokeImages(); replyDraft.value = null } })
-document.addEventListener('visibilitychange', () => { if (document.hidden) { entries.value = []; supportMessages.value = []; replyDraft.value = null; revokeImages() } else if (activeId.value) openRoom(activeId.value).catch(error => showFailToast(error.message)); else if (supportActive.value) openSupport(supportActive.value).catch(error => showFailToast(error.message)) })
+watch(activeId, id => { if (!id) { entries.value = []; replyDraft.value = null } })
+document.addEventListener('visibilitychange', () => { if (document.hidden) { roomRevision++; supportRevision++; roomSessions.clear(); entries.value = []; supportMessages.value = []; replyDraft.value = null; revokeImages() } else if (activeId.value) openRoom(activeId.value).catch(error => showFailToast(error.message)); else if (supportActive.value) openSupport(supportActive.value).catch(error => showFailToast(error.message)) })
 watch([unreadCount, supportUnreadCount], updateBadge)
 watch(composer, resizeComposer)
 watch([theme, zoom], applyAppearance)
@@ -747,7 +858,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
               <small>{{ entry.message.sender_name }} · {{ new Date(entry.message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small>
               <button v-if="entry.payload.reply" class="reply-quote">↩ {{ entry.payload.reply.sender_name }} · {{ entry.payload.reply.body }}</button>
               <p v-if="entry.payload.body">{{ entry.payload.body }}</p>
-              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
+              <van-image v-if="entry.imageUrl" :src="entry.imageUrl" @load="onMessageImageLoad(entry)" fit="cover" radius="10" @click="showImagePreview([entry.imageUrl])" />
               <span v-else-if="entry.payload.attachment" class="image-loading">{{ entry.imageError||'🔒 正在解密图片…' }}</span>
               <van-button class="message-more" icon="ellipsis" size="mini" plain @click="openMessageMenu(entry, $event)" />
             </article>
@@ -763,7 +874,7 @@ onBeforeUnmount(() => { clearInterval(supportTimer); clearTimeout(reconnectTimer
 
       <template v-else>
         <van-nav-bar :title="activeSupportThread?.visitor_name||'游客咨询'" left-arrow @click-left="supportActive=0"><template #right><van-button size="small" :type="activeSupportThread?.status==='open'?'danger':'primary'" @click="toggleSupportStatus">{{ activeSupportThread?.status==='open'?'结束咨询':'重新开启' }}</van-button></template></van-nav-bar>
-		<div ref="supportMessagesBox" class="messages"><article v-for="message in supportMessages" :key="message.id" class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }}</small><p>{{ message.displayBody }}</p></article></div>
+		<div ref="supportMessagesBox" class="messages"><template v-for="(message,index) in supportMessages" :key="message.id"><div v-if="index===0||dayKey(supportMessages[index-1].created_at)!==dayKey(message.created_at)" class="day-label">{{ dayLabel(message.created_at) }}</div><article class="message" :class="{mine:message.sender_type==='agent',system:message.sender_type==='system'}"><small>{{ message.sender_name||message.sender_type }} · {{ new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }}</small><p>{{ message.displayBody }}</p></article></template></div>
         <div v-if="activeSupportThread?.status==='open'" class="composer-wrap"><div class="composer"><textarea v-model="supportComposer" maxlength="2000" placeholder="回复游客" @keydown.enter.exact.prevent="sendSupport"/><van-button icon="guide-o" round type="primary" :loading="supportBusy" @click="sendSupport"/></div></div>
       </template>
     </section>

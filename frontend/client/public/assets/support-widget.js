@@ -30,11 +30,16 @@
     if(!response.ok)throw Object.assign(Error(data.error||'客服连接失败'),{status:response.status});
     return data;
   }
+  function cachedMessages(){try{const items=JSON.parse(localStorage.getItem(storageKey+':history:'+visitorToken)||'[]');return Array.isArray(items)?items:[]}catch{return []}}
+  function cacheMessage(message){
+    try{const envelope=JSON.parse(message.body);if(!envelope.recipients||!envelope.alg)return;const {id,thread_id,body,sender_type,sender_name,created_at}=message;const items=cachedMessages().filter(item=>String(item.id)!==String(id));items.push({id,thread_id,body,sender_type,sender_name,created_at});localStorage.setItem(storageKey+':history:'+visitorToken,JSON.stringify(items.sort((a,b)=>Number(a.id)-Number(b.id)).slice(-300)))}catch{}
+  }
   async function append(message){
+    cacheMessage(message);
     if(panel.hidden||document.hidden||root.querySelector(`[data-message-id="${message.id}"]`))return;
     root.querySelector('.connecting')?.remove();
     const bubble=document.createElement('div');bubble.className='bubble '+(message.sender_type==='visitor'?'mine':message.sender_type==='system'?'system':'');bubble.dataset.messageId=message.id;
-    if(message.sender_type!=='system'){const meta=document.createElement('div');meta.className='meta';meta.textContent=message.sender_type==='visitor'?'我':(message.sender_name||'客服');bubble.appendChild(meta)}
+    const meta=document.createElement('div');meta.className='meta';meta.textContent=(message.sender_type==='visitor'?'我':(message.sender_name||'客服'))+' · '+new Date(message.created_at).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});bubble.appendChild(meta);
     const body=document.createElement('div');body.textContent=await globalThis.SignalSupportCrypto.decrypt(message.body,message.thread_id,recipientID,visitorKey.privateKey);if(panel.hidden||document.hidden)return;bubble.appendChild(body);messages.appendChild(bubble);lastID=Math.max(lastID,Number(message.id)||0);messages.scrollTop=messages.scrollHeight;
   }
   async function createSession(){
@@ -58,7 +63,7 @@
     } finally {database.close()}
   }
   async function ensureSession(){
-    if(visitorToken){await ensureKey();return;}
+    if(visitorToken){if(!visitorKey||!recipientID)await ensureKey();return;}
     if(!sessionPromise)sessionPromise=createSession().finally(()=>{sessionPromise=null});
     await sessionPromise;
     await ensureKey();
@@ -68,19 +73,20 @@
     try{
       setStatus('正在连接…');
       await ensureSession();
+      if(!lastID)for(const message of cachedMessages())await append(message);
       const result=await request('/messages?after='+lastID);threadID=result.thread.id;for(const message of result.messages)await append(message);closed=result.thread.status==='closed';
       root.querySelector('.connecting')?.remove();setStatus('已连接客服');
-      if(closed){form.hidden=true;if(!root.querySelector('.restart')){const box=document.createElement('div');box.className='notice restart-box';box.textContent='本次咨询已结束';const button=document.createElement('button');button.className='restart';button.textContent='发起新咨询';button.onclick=async()=>{localStorage.removeItem(storageKey);visitorToken='';lastID=0;box.remove();form.hidden=false;await sync()};box.appendChild(document.createElement('br'));box.appendChild(button);messages.appendChild(box)}}
+      if(closed){form.hidden=true;if(!root.querySelector('.restart')){const box=document.createElement('div');box.className='notice restart-box';box.textContent='本次咨询已结束';const button=document.createElement('button');button.className='restart';button.textContent='发起新咨询';button.onclick=async()=>{localStorage.removeItem(storageKey);visitorToken='';visitorKey=null;recipientID='';lastID=0;box.remove();form.hidden=false;await sync()};box.appendChild(document.createElement('br'));box.appendChild(button);messages.appendChild(box)}}
       else form.hidden=false;
     }catch(error){
       setStatus('连接失败，正在重试');
-      if(error.status===401){localStorage.removeItem(storageKey);visitorToken='';lastID=0;messages.innerHTML='';setTimeout(sync,100);return}
+      if(error.status===401){localStorage.removeItem(storageKey);visitorToken='';visitorKey=null;recipientID='';lastID=0;messages.innerHTML='';setTimeout(sync,100);return}
       if(!messages.children.length||messages.querySelector('.notice')){messages.innerHTML="";const notice=document.createElement("div");notice.className="notice";notice.textContent=error.message;messages.appendChild(notice)}
     }finally{syncing=false}
   }
   function startPolling(){clearInterval(pollTimer);sync();pollTimer=setInterval(sync,2500)}
-  root.querySelector('.launcher').onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){startPolling();setTimeout(()=>input.focus(),50)}else {clearInterval(pollTimer);messages.innerHTML='';lastID=0}};
-  root.querySelector('.close').onclick=()=>{panel.hidden=true;clearInterval(pollTimer);messages.innerHTML='';lastID=0};
+  root.querySelector('.launcher').onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){startPolling();setTimeout(()=>input.focus(),50)}else {clearInterval(pollTimer)}};
+  root.querySelector('.close').onclick=()=>{panel.hidden=true;clearInterval(pollTimer)};
   form.onsubmit=async event=>{event.preventDefault();const body=input.value.trim();if(!body||sending||closed)return;sending=true;try{setStatus('正在发送…');await ensureSession();if(!threadID)threadID=(await request("/messages?after=0")).thread.id;const sent=await request('/messages',{method:'POST',body:JSON.stringify({body:await globalThis.SignalSupportCrypto.encrypt(body,threadID,await request('/members'))})});await append(sent);input.value='';setStatus('已连接客服')}catch(error){setStatus('发送失败');const notice=document.createElement('div');notice.className='notice';notice.textContent=error.message;messages.appendChild(notice)}finally{sending=false;input.focus()}};
   input.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();form.requestSubmit()}};
   document.addEventListener('visibilitychange',()=>{if(document.hidden){messages.innerHTML='';lastID=0}else if(!panel.hidden)sync()});
