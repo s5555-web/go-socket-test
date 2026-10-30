@@ -14,6 +14,9 @@ function cleanMessage(value) {
   if (!value || typeof value !== 'object') throw new Error('invalid message');
   const body = String(value.body ?? '');
   if (!body || Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) throw new Error('invalid message body');
+  let env;
+  try { env = JSON.parse(body); } catch { throw new Error('unencrypted message'); }
+  if (![1,2].includes(env.v) || !['P256-HKDF-A256GCM','P256-MLKEM768-HKDF-SHA256-A256GCM'].includes(env.alg) || !env.recipients || Object.keys(env).some(key => !['v','alg','recipients','attachment_id'].includes(key))) throw new Error('unencrypted message');
   const createdAt = new Date(value.created_at);
   if (Number.isNaN(createdAt.getTime())) throw new Error('invalid message time');
   return {

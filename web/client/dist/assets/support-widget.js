@@ -9,6 +9,7 @@
   const title=script.dataset.title||'在线客服';
   const position=script.dataset.position==='left'?'left':'right';
   const storageKey=`signal-support:${siteKey}`;
+  let visitorKey=null,recipientID='',threadID=0;
   let visitorToken=localStorage.getItem(storageKey)||'',lastID=0,pollTimer=null,syncing=false,sending=false,sessionPromise=null,closed=false;
 
   const host=document.createElement('div');host.style.cssText='position:fixed;z-index:2147483000;bottom:20px;'+position+':20px';
@@ -29,40 +30,59 @@
     if(!response.ok)throw Object.assign(Error(data.error||'客服连接失败'),{status:response.status});
     return data;
   }
-  function append(message){
-    if(root.querySelector(`[data-message-id="${message.id}"]`))return;
+  async function append(message){
+    if(panel.hidden||document.hidden||root.querySelector(`[data-message-id="${message.id}"]`))return;
     root.querySelector('.connecting')?.remove();
     const bubble=document.createElement('div');bubble.className='bubble '+(message.sender_type==='visitor'?'mine':message.sender_type==='system'?'system':'');bubble.dataset.messageId=message.id;
     if(message.sender_type!=='system'){const meta=document.createElement('div');meta.className='meta';meta.textContent=message.sender_type==='visitor'?'我':(message.sender_name||'客服');bubble.appendChild(meta)}
-    const body=document.createElement('div');body.textContent=message.body;bubble.appendChild(body);messages.appendChild(bubble);lastID=Math.max(lastID,Number(message.id)||0);messages.scrollTop=messages.scrollHeight;
+    const body=document.createElement('div');body.textContent=await globalThis.SignalSupportCrypto.decrypt(message.body,message.thread_id,recipientID,visitorKey.privateKey);if(panel.hidden||document.hidden)return;bubble.appendChild(body);messages.appendChild(bubble);lastID=Math.max(lastID,Number(message.id)||0);messages.scrollTop=messages.scrollHeight;
   }
   async function createSession(){
-    const session=await request('/sessions',{method:'POST',body:JSON.stringify({site_key:siteKey})});visitorToken=session.visitor_token;localStorage.setItem(storageKey,visitorToken);closed=false;lastID=0;messages.innerHTML='';
+    const session=await request('/sessions',{method:'POST',body:JSON.stringify({site_key:siteKey})});visitorToken=session.visitor_token;threadID=session.thread_id;localStorage.setItem(storageKey,visitorToken);closed=false;lastID=0;messages.innerHTML='';
+  }
+  const cryptoReady=new Promise((resolve,reject)=>{
+    if(globalThis.SignalSupportCrypto)return resolve();
+    const loader=document.createElement('script');loader.src=base+'/assets/support-crypto.js';loader.onload=resolve;loader.onerror=()=>reject(Error('加密组件加载失败'));document.head.appendChild(loader);
+  });
+  async function ensureKey(){
+    await cryptoReady;
+    const database=await new Promise((resolve,reject)=>{const q=indexedDB.open('signal-support-keys',1);q.onupgradeneeded=()=>q.result.createObjectStore('keys');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+    try {
+      visitorKey=await new Promise((resolve,reject)=>{const q=database.transaction('keys').objectStore('keys').get(storageKey+':'+visitorToken);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+      if(!visitorKey){
+        visitorKey=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},false,['deriveBits']);
+        await new Promise((resolve,reject)=>{const tx=database.transaction('keys','readwrite');tx.objectStore('keys').put(visitorKey,storageKey+':'+visitorToken);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});
+      }
+      const pub=await crypto.subtle.exportKey('jwk',visitorKey.publicKey);
+      const result=await request('/key',{method:'POST',body:JSON.stringify({public_key:JSON.stringify({kty:pub.kty,crv:pub.crv,x:pub.x,y:pub.y})})});recipientID=result.recipient_id;
+    } finally {database.close()}
   }
   async function ensureSession(){
-    if(visitorToken)return;
+    if(visitorToken){await ensureKey();return;}
     if(!sessionPromise)sessionPromise=createSession().finally(()=>{sessionPromise=null});
     await sessionPromise;
+    await ensureKey();
   }
   async function sync(){
-    if(syncing||panel.hidden)return;syncing=true;
+    if(syncing||panel.hidden||document.hidden)return;syncing=true;
     try{
       setStatus('正在连接…');
       await ensureSession();
-      const result=await request('/messages?after='+lastID);result.messages.forEach(append);closed=result.thread.status==='closed';
+      const result=await request('/messages?after='+lastID);threadID=result.thread.id;for(const message of result.messages)await append(message);closed=result.thread.status==='closed';
       root.querySelector('.connecting')?.remove();setStatus('已连接客服');
       if(closed){form.hidden=true;if(!root.querySelector('.restart')){const box=document.createElement('div');box.className='notice restart-box';box.textContent='本次咨询已结束';const button=document.createElement('button');button.className='restart';button.textContent='发起新咨询';button.onclick=async()=>{localStorage.removeItem(storageKey);visitorToken='';lastID=0;box.remove();form.hidden=false;await sync()};box.appendChild(document.createElement('br'));box.appendChild(button);messages.appendChild(box)}}
       else form.hidden=false;
     }catch(error){
       setStatus('连接失败，正在重试');
       if(error.status===401){localStorage.removeItem(storageKey);visitorToken='';lastID=0;messages.innerHTML='';setTimeout(sync,100);return}
-      if(!messages.children.length||messages.querySelector('.notice'))messages.innerHTML=`<div class="notice">${error.message}</div>`;
+      if(!messages.children.length||messages.querySelector('.notice')){messages.innerHTML="";const notice=document.createElement("div");notice.className="notice";notice.textContent=error.message;messages.appendChild(notice)}
     }finally{syncing=false}
   }
   function startPolling(){clearInterval(pollTimer);sync();pollTimer=setInterval(sync,2500)}
-  root.querySelector('.launcher').onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){startPolling();setTimeout(()=>input.focus(),50)}else clearInterval(pollTimer)};
-  root.querySelector('.close').onclick=()=>{panel.hidden=true;clearInterval(pollTimer)};
-  form.onsubmit=async event=>{event.preventDefault();const body=input.value.trim();if(!body||sending||closed)return;sending=true;try{setStatus('正在发送…');await ensureSession();const sent=await request('/messages',{method:'POST',body:JSON.stringify({body})});append(sent);input.value='';setStatus('已连接客服')}catch(error){setStatus('发送失败');const notice=document.createElement('div');notice.className='notice';notice.textContent=error.message;messages.appendChild(notice)}finally{sending=false;input.focus()}};
+  root.querySelector('.launcher').onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){startPolling();setTimeout(()=>input.focus(),50)}else {clearInterval(pollTimer);messages.innerHTML='';lastID=0}};
+  root.querySelector('.close').onclick=()=>{panel.hidden=true;clearInterval(pollTimer);messages.innerHTML='';lastID=0};
+  form.onsubmit=async event=>{event.preventDefault();const body=input.value.trim();if(!body||sending||closed)return;sending=true;try{setStatus('正在发送…');await ensureSession();if(!threadID)threadID=(await request("/messages?after=0")).thread.id;const sent=await request('/messages',{method:'POST',body:JSON.stringify({body:await globalThis.SignalSupportCrypto.encrypt(body,threadID,await request('/members'))})});await append(sent);input.value='';setStatus('已连接客服')}catch(error){setStatus('发送失败');const notice=document.createElement('div');notice.className='notice';notice.textContent=error.message;messages.appendChild(notice)}finally{sending=false;input.focus()}};
   input.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();form.requestSubmit()}};
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){messages.innerHTML='';lastID=0}else if(!panel.hidden)sync()});
   request('/config?site_key='+encodeURIComponent(siteKey)).catch(error=>{console.error('Signal Support:',error.message);host.remove()});
 })();

@@ -83,7 +83,7 @@ const E2EE=(()=>{
     return JSON.stringify({v:useHybrid?2:1,alg:useHybrid?PQ_ALG:'P256-HKDF-A256GCM',attachment_id:attachment?.id||undefined,recipients});
   }
   async function decryptPayload(value,conversationID,userID,members,senderID){
-    let env;try{env=JSON.parse(value)}catch{return {body:'⚠ 历史未加密消息：'+value,attachment:null,reply:null}}
+    let env;try{env=JSON.parse(value)}catch{return {body:'🔒 已阻止未加密消息',attachment:null,reply:null}}
     if(![1,2].includes(env.v)||!env.recipients)return {body:'⚠ 无法识别的加密消息',attachment:null,reply:null};
     const box=env.recipients[userID],sender=members.find(member=>member.id===senderID);if(!box||!sender?.public_key)return {body:'🔒 无法解密此消息',attachment:null,reply:null};
     try{
@@ -102,6 +102,6 @@ const E2EE=(()=>{
   async function decryptEnvelope(...args){return (await decryptPayload(...args)).body}
   async function fingerprint(members){const canonical=await Promise.all(members.map(member=>memberKeyHash(member)));const hash=await crypto.subtle.digest('SHA-256',enc.encode(canonical.sort().join('|')));return [...new Uint8Array(hash)].slice(0,12).map(value=>value.toString(16).padStart(2,'0')).join(' ').toUpperCase()}
   function isPostQuantumReady(members){return !!identity?.pq&&members.length>0&&members.every(member=>member.public_key&&member.pq_public_key)}
-  return {init,encrypt,decrypt:decryptEnvelope,decryptPayload,encryptAttachment,decryptAttachment,fingerprint,changedMemberKeys,trustMemberKeys,isPostQuantumReady};
+  return {decryptSupport: (value,threadID,userID) => globalThis.SignalSupportCrypto.decrypt(value,threadID,`agent:${userID}`,identity.privateKey),init,encrypt,decrypt:decryptEnvelope,decryptPayload,encryptAttachment,decryptAttachment,fingerprint,changedMemberKeys,trustMemberKeys,isPostQuantumReady};
 })();
 export default E2EE;

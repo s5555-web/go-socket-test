@@ -10,7 +10,7 @@ const message = (id, sender = 2) => ({
   conversation_id: 7,
   sender_id: sender,
   sender_name: 'Test',
-  body: '{"v":2,"ciphertext":"encrypted"}',
+  body: '{"v":2,"alg":"P256-MLKEM768-HKDF-SHA256-A256GCM","recipients":{"1":{"iv":"cipher","ct":"cipher"}}}',
   created_at: new Date(1700000000000 + id).toISOString(),
 });
 
@@ -38,4 +38,12 @@ test('isolates accounts and validates synchronized deletion sender', async () =>
   assert.equal(await store.deleteIfSender({ accountId: 1, conversationId: 7, messageId: 3, senderId: 2 }), true);
   assert.equal(store.page({ accountId: 1, conversationId: 7 }).length, 0);
   assert.equal(store.page({ accountId: 9, conversationId: 7 }).length, 1);
+});
+
+test('rejects plaintext and strips decrypted render properties before disk persistence', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'signal-history-')), 'history.json');
+  const store = new HistoryStore(file);
+  await assert.rejects(store.put({accountId:1,message:{...message(4),body:'private plaintext'}}),/unencrypted/);
+  await store.put({accountId:1,message:{...message(5),payload:{body:'private plaintext'},displayBody:'private plaintext'}});
+  assert.equal(fs.readFileSync(file,'utf8').includes('private plaintext'),false);
 });

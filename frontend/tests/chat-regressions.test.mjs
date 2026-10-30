@@ -14,7 +14,7 @@ test('decrypted image and download errors update the rendered entry', async () =
     E2EE: { decryptPayload: async () => ({ attachment: { id: 'image', size: 3, mime: 'image/png' } }), decryptAttachment: async () => new Uint8Array(3) },
     fetch: async () => ({ ok: downloadOK, arrayBuffer: async () => new ArrayBuffer(3) }),
     URL: { createObjectURL: () => 'blob:decrypted' }, Blob, objectURLs: new Set(),
-    nextTick: async () => {}, scrollBottom() {}
+    document: {hidden:false}, nextTick: async () => {}, scrollBottom() {}
   })
   vm.runInContext(section('async function loadEntryImage(', '\nasync function openRoom(') + section('async function addMessage(', '\nfunction focusComposer('), context)
   let rendered
@@ -73,4 +73,21 @@ test('group creation displays the API error and preserves the draft', async () =
   assert.equal(toast, '只能邀请好友加入群聊')
   assert.equal(showGroup.value, true)
   assert.deepEqual(group, { name: '测试群', member_ids: [2] })
+})
+
+test('support decryption does not retain display plaintext if hidden or switched while decrypting', async () => {
+  let resolve
+  const document={hidden:false},supportActive=ref(7)
+  let decryptCalls=0
+  const context=vm.createContext({document,supportActive,me:ref({id:1}),E2EE:{decryptSupport(){decryptCalls++;return new Promise(done=>{resolve=done})}}})
+  vm.runInContext(section('async function decryptSupportMessages(', '\nasync function openSupport('),context)
+  let pending=context.decryptSupportMessages([{id:1,thread_id:7,body:'cipher'}])
+  document.hidden=true;resolve('private message')
+  assert.equal((await pending).length,0)
+  await context.decryptSupportMessages([{id:1,thread_id:7,body:'cipher'}])
+  assert.equal(decryptCalls,1)
+  document.hidden=false
+  pending=context.decryptSupportMessages([{id:1,thread_id:7,body:'cipher'}])
+  supportActive.value=8;resolve('private message')
+  assert.equal((await pending).length,0)
 })

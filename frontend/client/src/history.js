@@ -89,7 +89,13 @@ export function createLocalHistory(getMe) {
     })
   }
 
+  function ciphertextMessage(value) {
+    const env = JSON.parse(value.body)
+    if (![1,2].includes(env.v) || !['P256-HKDF-A256GCM','P256-MLKEM768-HKDF-SHA256-A256GCM'].includes(env.alg) || !env.recipients || Object.keys(env).some(key => !['v','alg','recipients','attachment_id'].includes(key))) throw Error('拒绝保存未加密消息')
+    return { id:value.id, conversation_id:value.conversation_id, sender_id:value.sender_id, sender_name:value.sender_name, created_at:value.created_at, body:value.body }
+  }
   async function put(message, readState = false) {
+    message = ciphertextMessage(message)
     const read = readState || message.sender_id === getMe()?.id
     const record = { sort: sortKey(message), read, message }
     saveMirror(message.conversation_id, [...readMirror(message.conversation_id).filter(item => String(item.message?.id) !== String(message.id)), record])

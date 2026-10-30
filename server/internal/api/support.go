@@ -172,9 +172,7 @@ func (a *API) createWidgetSession(c *gin.Context) {
 		return
 	}
 	threadID, _ := result.LastInsertId()
-	if strings.TrimSpace(site.WelcomeMessage) != "" {
-		_, err = tx.Exec(`INSERT INTO support_messages(thread_id,sender_type,body) VALUES(?,'system',?)`, threadID, site.WelcomeMessage)
-	}
+
 	if err != nil || tx.Commit() != nil {
 		_ = tx.Rollback()
 		fail(c, 500, "创建访客会话失败")
@@ -262,8 +260,8 @@ func (a *API) sendWidgetMessage(c *gin.Context) {
 		return
 	}
 	in.Body = strings.TrimSpace(in.Body)
-	if in.Body == "" || len([]rune(in.Body)) > 2000 {
-		fail(c, 400, "消息不能为空且不能超过2000字")
+	if members, err := a.supportEncryptionMembers(thread.ID); err != nil || len(members) < 2 || validateSupportEnvelope(in.Body, members) != nil {
+		fail(c, 400, "请升级客户端并发送端到端加密消息")
 		return
 	}
 	result, err := a.store.DB.Exec(`INSERT INTO support_messages(thread_id,sender_type,body) VALUES(?,'visitor',?)`, thread.ID, in.Body)
@@ -301,7 +299,7 @@ func (a *API) requireSupport() gin.HandlerFunc {
 }
 
 func (a *API) supportThreads(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT t.id,t.site_id,s.name,t.visitor_id,v.display_name,t.assigned_user_id,COALESCE(u.display_name,''),t.status,COALESCE((SELECT body FROM support_messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1),''),t.created_at,t.updated_at FROM support_threads t JOIN support_sites s ON s.id=t.site_id JOIN support_user_sites x ON x.site_id=t.site_id AND x.user_id=? JOIN support_visitors v ON v.id=t.visitor_id LEFT JOIN users u ON u.id=t.assigned_user_id ORDER BY (t.status='open') DESC,t.updated_at DESC LIMIT 200`, uid(c))
+	rows, err := a.store.DB.Query(`SELECT t.id,t.site_id,s.name,t.visitor_id,v.display_name,t.assigned_user_id,COALESCE(u.display_name,''),t.status,IF(EXISTS(SELECT 1 FROM support_messages WHERE thread_id=t.id),'🔒 加密消息',''),t.created_at,t.updated_at FROM support_threads t JOIN support_sites s ON s.id=t.site_id JOIN support_user_sites x ON x.site_id=t.site_id AND x.user_id=? JOIN support_visitors v ON v.id=t.visitor_id LEFT JOIN users u ON u.id=t.assigned_user_id ORDER BY (t.status='open') DESC,t.updated_at DESC LIMIT 200`, uid(c))
 	if err != nil {
 		fail(c, 500, "读取客服会话失败")
 		return
@@ -360,8 +358,8 @@ func (a *API) sendSupportMessage(c *gin.Context) {
 		return
 	}
 	in.Body = strings.TrimSpace(in.Body)
-	if in.Body == "" || len([]rune(in.Body)) > 2000 {
-		fail(c, 400, "消息不能为空且不能超过2000字")
+	if members, err := a.supportEncryptionMembers(threadID); err != nil || len(members) < 2 || validateSupportEnvelope(in.Body, members) != nil {
+		fail(c, 400, "请升级客户端并发送端到端加密消息")
 		return
 	}
 	tx, err := a.store.DB.Begin()

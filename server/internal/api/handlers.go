@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -42,8 +43,8 @@ func (a *API) requireUser(admin bool) gin.HandlerFunc {
 }
 func uid(c *gin.Context) int64 { return c.MustGet("uid").(int64) }
 
-// messageSequence creates sortable, JavaScript-safe identifiers without writing
-// message contents to the database. The millisecond prefix prevents collisions
+// messageSequence creates sortable, JavaScript-safe identifiers.
+// The millisecond prefix prevents collisions
 // across process restarts; the atomic increment handles bursts in one process.
 var messageSequence atomic.Int64
 
@@ -365,7 +366,7 @@ func (a *API) removeFriend(c *gin.Context) {
 }
 
 func (a *API) conversations(c *gin.Context) {
-	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,'',x.created_at,IF(cm.manual_unread,1,0),cm.manual_unread,cm.pinned,cm.archived,cm.muted_until FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY cm.pinned DESC,x.created_at DESC`, uid(c), uid(c))
+	rows, err := a.store.DB.Query(`SELECT x.id,IF(x.is_group,x.name,COALESCE(other.display_name,x.name)),x.is_group,IF(EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=x.id),'encrypted',''),COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id=x.id),x.created_at),IF(cm.manual_unread,1,0),cm.manual_unread,cm.pinned,cm.archived,cm.muted_until FROM conversation_members cm JOIN conversations x ON x.id=cm.conversation_id LEFT JOIN conversation_members ocm ON ocm.conversation_id=x.id AND ocm.user_id<>? AND x.is_group=0 LEFT JOIN users other ON other.id=ocm.user_id WHERE cm.user_id=? AND cm.hidden=FALSE ORDER BY cm.pinned DESC,x.created_at DESC`, uid(c), uid(c))
 	if err != nil {
 		fail(c, 500, "查询失败")
 		return
@@ -601,9 +602,35 @@ func (a *API) messages(c *gin.Context) {
 		fail(c, 403, "无权访问")
 		return
 	}
-	// Message history belongs to each device's IndexedDB. This endpoint remains
-	// for backward-compatible clients, but deliberately returns no server history.
-	c.JSON(200, []store.Message{})
+	before, _ := strconv.ParseInt(c.Query("before"), 10, 64)
+	if before <= 0 {
+		before = 9007199254740991
+	}
+	rows, err := a.store.DB.Query(`SELECT m.id,m.conversation_id,m.sender_id,u.display_name,m.body,m.created_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.id<? AND NOT EXISTS(SELECT 1 FROM message_deletions d WHERE d.message_id=m.id AND d.user_id=?) ORDER BY m.id DESC LIMIT 40`, id, before, uid(c))
+	if err != nil {
+		fail(c, 500, "读取密文历史失败")
+		return
+	}
+	defer rows.Close()
+	out := []store.Message{}
+	for rows.Next() {
+		var m store.Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt); err != nil {
+			fail(c, 500, "读取失败")
+			return
+		}
+		if _, err := validateEncryptedEnvelope(m.Body); err == nil {
+			out = append(out, m)
+		}
+	}
+	if rows.Err() != nil {
+		fail(c, 500, "读取失败")
+		return
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	c.JSON(200, out)
 }
 
 func (a *API) cleanupExpiredPendingMessages() {
@@ -698,6 +725,10 @@ func (a *API) deleteMessage(c *gin.Context) {
 	}
 	scope := c.DefaultQuery("scope", "self")
 	if scope == "self" {
+		if _, err := a.store.DB.Exec(`INSERT IGNORE INTO message_deletions(message_id,user_id) SELECT id,? FROM messages WHERE id=? AND conversation_id=?`, uid(c), messageID, conversationID); err != nil {
+			fail(c, 500, "删除失败")
+			return
+		}
 		c.Status(http.StatusNoContent)
 		return
 	}
@@ -725,6 +756,12 @@ func (a *API) deleteMessage(c *gin.Context) {
 	}
 	if _, txErr = tx.Exec(`DELETE pmr FROM pending_message_recipients pmr JOIN pending_messages pm ON pm.id=pmr.message_id WHERE pm.id=? AND pm.conversation_id=? AND pm.sender_id=?`, messageID, conversationID, uid(c)); txErr == nil {
 		_, txErr = tx.Exec(`DELETE FROM pending_messages WHERE id=? AND conversation_id=? AND sender_id=?`, messageID, conversationID, uid(c))
+	}
+	if txErr == nil {
+		_, txErr = tx.Exec(`DELETE d FROM message_deletions d JOIN messages m ON m.id=d.message_id WHERE m.id=? AND m.conversation_id=? AND m.sender_id=?`, messageID, conversationID, uid(c))
+	}
+	if txErr == nil {
+		_, txErr = tx.Exec(`DELETE FROM messages WHERE id=? AND conversation_id=? AND sender_id=?`, messageID, conversationID, uid(c))
 	}
 	if txErr != nil || tx.Commit() != nil {
 		_ = tx.Rollback()
@@ -868,7 +905,9 @@ type encryptedEnvelope struct {
 
 func validateEncryptedEnvelope(value string) (encryptedEnvelope, error) {
 	var envelope encryptedEnvelope
-	if value == "" || len(value) > 524288 || json.Unmarshal([]byte(value), &envelope) != nil {
+	decoder := json.NewDecoder(bytes.NewBufferString(value))
+	decoder.DisallowUnknownFields()
+	if value == "" || len(value) > 524288 || !json.Valid([]byte(value)) || decoder.Decode(&envelope) != nil {
 		return envelope, fmt.Errorf("invalid encrypted envelope")
 	}
 	legacy := envelope.V == 1 && envelope.Alg == "P256-HKDF-A256GCM"
@@ -963,6 +1002,11 @@ func (a *API) sendMessage(c *gin.Context) {
 	tx, err := a.store.DB.Begin()
 	if err != nil {
 		fail(c, 500, "发送失败")
+		return
+	}
+	if _, err = tx.Exec(`INSERT INTO messages(id,conversation_id,sender_id,body,created_at) VALUES(?,?,?,?,?)`, mid, id, uid(c), in.Body, createdAt); err != nil {
+		_ = tx.Rollback()
+		fail(c, 500, "保存密文失败")
 		return
 	}
 	if len(recipientIDs) > 0 {

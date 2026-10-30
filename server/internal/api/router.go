@@ -49,6 +49,9 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 		if c.Request.URL.Path == "/assets/support-widget.js" {
 			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		}
+		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+			c.Header("Cache-Control", "no-store")
+		}
 		c.Next()
 	})
 	sock := &socket.Handler{Hub: a.hub, Authorize: a.auth.ConsumeWebSocketTicket}
@@ -65,6 +68,8 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	widget.Use(a.widgetCORS())
 	widget.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	widget.GET("/config", a.widgetConfig)
+	widget.POST("/key", a.setVisitorKey)
+	widget.GET("/members", a.widgetMembers)
 	widget.POST("/sessions", a.createWidgetSession)
 	widget.GET("/messages", a.widgetMessages)
 	widget.POST("/messages", a.sendWidgetMessage)
@@ -104,6 +109,7 @@ func (a *API) ClientEngine(cfg *config.Config) *gin.Engine {
 	support := u.Group("/support")
 	support.Use(a.requireSupport())
 	support.GET("/threads", a.supportThreads)
+	support.GET("/threads/:id/members", a.supportMembers)
 	support.GET("/threads/:id/messages", a.supportThreadMessages)
 	support.POST("/threads/:id/messages", a.sendSupportMessage)
 	support.PUT("/threads/:id/status", a.updateSupportThreadStatus)

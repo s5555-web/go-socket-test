@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -88,6 +89,13 @@ func (s *Store) migrate() error {
 		if _, err := s.DB.Exec(q); err != nil {
 			return err
 		}
+	}
+	if _, err := s.DB.Exec(`ALTER TABLE support_messages MODIFY COLUMN body MEDIUMTEXT NOT NULL`); err != nil {
+		return err
+	}
+	_, keyErr := s.DB.Exec(`ALTER TABLE support_visitors ADD COLUMN public_key TEXT NULL`)
+	if keyErr != nil && !strings.Contains(keyErr.Error(), "Duplicate column") {
+		return keyErr
 	}
 	// Existing installations predate end-to-end encryption. Duplicate-column is harmless.
 	_, _ = s.DB.Exec(`ALTER TABLE users ADD COLUMN public_key TEXT NULL AFTER avatar`)
